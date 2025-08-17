@@ -8,3 +8,4 @@ resources:
   - ./webhook
   - service.yaml
   - deployment.yaml
+  - ./monitoring

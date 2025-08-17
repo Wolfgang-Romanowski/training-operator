@@ -1,0 +1,108 @@
+# manifests/rhoai/rhoai-adoption-dashboard.yaml
+apiVersion: perses.dev/v1alpha1
+kind: PersesDashboard
+metadata:
+  name: training-operator-rhoai-adoption
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: training-operator
+    monitoring.opendatahub.io/dashboard: "true"  # REQUIRED for discovery
+    rhoai.opendatahub.io/dashboard: "true"       # REQUIRED for RHOAI UI
+spec:
+  datasources:
+    - name: prometheus
+      default: true
+      plugin:
+        kind: "PrometheusDatasource"
+        spec:
+          directUrl: "https://thanos-querier.openshift-monitoring.svc.cluster.local:9091"
+  
+  duration: "6h"
+  refreshInterval: "30s"
+  
+  layouts:
+    - kind: Grid
+      spec:
+        display:
+          title: "RHOAI Training Operator Adoption Metrics"
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 0
+            width: 12
+            height: 4
+            content:
+              "$ref": "#/spec/panels/0"
+          - x: 12
+            y: 0
+            width: 12
+            height: 4
+            content:
+              "$ref": "#/spec/panels/1"
+          - x: 0
+            y: 4
+            width: 24
+            height: 6
+            content:
+              "$ref": "#/spec/panels/2"
+  
+  panels:
+    - kind: GaugeChart
+      spec:
+        display:
+          name: "RHOAI Image Adoption Rate"
+          description: "Percentage of jobs using RHOAI official images"
+        plugin:
+          kind: GaugeChart
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: "openshift:training_rhoai_adoption_percentage"
+        thresholds:
+          - value: 80
+            color: "#73BF69"
+          - value: 50
+            color: "#F9B82E"
+          - value: 0
+            color: "#BF2B45"
+    
+    - kind: BarChart
+      spec:
+        display:
+          name: "RHOAI Version Distribution"
+          description: "Usage by RHOAI runtime version"
+        plugin:
+          kind: BarChart
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: "openshift:training_rhoai_version_usage"
+    
+    - kind: TimeSeriesChart
+      spec:
+        display:
+          name: "Version Migration Trends"
+          description: "Migration velocity to newer versions"
+        plugin:
+          kind: TimeSeriesChart
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: "openshift:training_version_migration_velocity"
+        yAxis:
+          show: true
+          label: "Jobs/Week"
+          format:
+            unit: "decimal"

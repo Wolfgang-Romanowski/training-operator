@@ -26,6 +26,7 @@ import (
 	"github.com/kubeflow/training-operator/pkg/controller.v1/common"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/control"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/expectation"
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 	commonutil "github.com/kubeflow/training-operator/pkg/util"
 
 	"github.com/go-logr/logr"
@@ -337,6 +338,10 @@ func (r *PyTorchJobReconciler) DeleteJob(job interface{}) error {
 	r.recorder.Eventf(pytorchjob, corev1.EventTypeNormal, control.SuccessfulDeletePodReason, "Deleted job: %v", pytorchjob.Name)
 	logrus.Info("job deleted", "namespace", pytorchjob.Namespace, "name", pytorchjob.Name)
 	trainingoperatorcommon.DeletedJobsCounterInc(pytorchjob.Namespace, r.GetFrameworkName())
+
+	// Report job deletion to telemetry
+	telemetry.ReportJobDeletion(pytorchjob, "pytorch")
+
 	return nil
 }
 
@@ -408,6 +413,10 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 					}
 					commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PyTorchJobKind, commonutil.JobSucceededReason), msg)
 					trainingoperatorcommon.SuccessfulJobsCounterInc(pytorchjob.Namespace, r.GetFrameworkName())
+
+					// Report successful job completion to telemetry
+					telemetry.ReportJobCompletion(pytorchjob, "pytorch", true)
+
 					return nil
 				}
 			}
@@ -427,6 +436,9 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 					}
 					commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PyTorchJobKind, commonutil.JobSucceededReason), msg)
 					trainingoperatorcommon.SuccessfulJobsCounterInc(pytorchjob.Namespace, r.GetFrameworkName())
+
+					// Report successful job completion to telemetry
+					telemetry.ReportJobCompletion(pytorchjob, "pytorch", true)
 				} else if running > 0 {
 					// Some workers are still running, leave a running condition.
 					msg := fmt.Sprintf("PyTorchJob %s/%s is running.",
@@ -451,6 +463,9 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobFailed, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PyTorchJobKind, commonutil.JobFailedReason), msg)
 				trainingoperatorcommon.FailedJobsCounterInc(pytorchjob.Namespace, r.GetFrameworkName())
+
+				// Report job failure to telemetry
+				telemetry.ReportJobCompletion(pytorchjob, "pytorch", false)
 			}
 		}
 	}
@@ -533,6 +548,10 @@ func (r *PyTorchJobReconciler) onOwnerCreateFunc() func(createEvent event.TypedC
 		logrus.Info(msg)
 		trainingoperatorcommon.CreatedJobsCounterInc(pytorchjob.Namespace, r.GetFrameworkName())
 		commonutil.UpdateJobConditions(&pytorchjob.Status, kubeflowv1.JobCreated, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PyTorchJobKind, commonutil.JobCreatedReason), msg)
+
+		// Report job creation to telemetry
+		telemetry.ReportJobCreation(pytorchjob, "pytorch")
+
 		return true
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -126,6 +127,11 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	// Initialize telemetry metrics
+	// Per RHOAISTRAT-575: All metrics exposed on standard :8080 endpoint
+	setupLog.Info("Initializing telemetry metrics")
+	metrics.EnsureInitialized()
+
 	var cacheOpts cache.Options
 	if namespace != "" {
 		cacheOpts = cache.Options{
@@ -142,6 +148,7 @@ func main() {
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
+			// Telemetry metrics are automatically exposed here via controller-runtime
 		},
 		WebhookServer: webhook.NewServer(webhook.Options{
 			Port: webhookServerPort,

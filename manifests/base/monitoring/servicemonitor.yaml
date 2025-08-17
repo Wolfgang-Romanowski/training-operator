@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: training-operator-metrics
+  namespace: opendatahub
+  labels:
+    monitoring.opendatahub.io/scrape: "true"  # CRITICAL
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: training-operator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: training-operator-controller-manager
+      app.kubernetes.io/component: metrics
+  endpoints:
+  - port: http  
+    scheme: http
+    path: /metrics
+    interval: 30s
+    relabelings:
+    - action: labeldrop
+      regex: pod|instance|job|endpoint|service

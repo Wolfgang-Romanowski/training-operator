@@ -1,0 +1,69 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: training-operator-recording-rules
+  namespace: opendatahub
+  labels:
+    monitoring.opendatahub.io/scrape: "true"
+    prometheus: kube-prometheus
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/part-of: training-operator
+spec:
+  groups:
+  - name: training_operator.telemetry
+    interval: 30s
+    rules:
+    # =========================================================
+    # RECORDING RULES FOR TELEMETRY - MANDATORY per Handbook
+    # =========================================================
+    
+    # RULE 1: RHOAI adoption percentage (KEY BUSINESS METRIC)
+    - record: openshift:training_rhoai_adoption_percentage
+      expr: |
+        (
+          sum(training_jobs_by_image_source_total{image_source="rhoai_official"})
+          /
+          sum(training_jobs_by_image_source_total)
+        ) * 100 or on() vector(0)
+    
+    # RULE 2: RHOAI version distribution (for deprecation decisions)
+    - record: openshift:training_rhoai_version_usage
+      expr: |
+        sum by (rhoai_version) (
+          training_jobs_by_image_source_total{image_source="rhoai_official"}
+        ) or on() group by (rhoai_version) (0 * training_jobs_by_image_source_total)
+    
+    # RULE 3: Version migration velocity (upgrade patterns)
+    - record: openshift:training_version_migration_velocity
+      expr: |
+        sum by (to_version) (
+          rate(training_jobs_version_migration_total[7d])
+        ) or on() group by (to_version) (0 * training_jobs_version_migration_total)
+    
+    # RULE 4: Image source breakdown (RHOAI vs community vs custom)
+    - record: openshift:training_image_source_distribution
+      expr: |
+        sum by (image_source) (
+          training_jobs_by_image_source_total
+        )
+    
+    # RULE 5: Framework usage (aggregated)
+    - record: openshift:training_framework_usage_total
+      expr: |
+        sum by (framework) (
+          training_jobs_created_total
+        )
+    
+    # RULE 6: Job success rate (for platform health)
+    - record: openshift:training_job_success_rate
+      expr: |
+        (
+          sum(training_jobs_completed_total{status="succeeded"})
+          /
+          sum(training_jobs_completed_total)
+        ) * 100 or on() vector(100)
+    
+    # RULE 7: Controller health (for SRE monitoring)
+    - record: openshift:training_operator_error_rate
+      expr: |
+        sum(rate(training_operator_reconcile_errors_total[5m])) or on() vector(0)

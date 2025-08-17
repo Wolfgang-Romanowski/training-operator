@@ -1,0 +1,15 @@
+# manifests/base/monitoring/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - service.yaml
+  - servicemonitor.yaml
+  - prometheusrule.yaml
+  - prometheus-alerts.yaml
+  - networkpolicy.yaml
+  - service-level-objectives.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: training-operator
+  monitoring.opendatahub.io/scrape: "true"

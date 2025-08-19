@@ -26,6 +26,7 @@ import (
 	"github.com/kubeflow/training-operator/pkg/controller.v1/common"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/control"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/expectation"
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 	commonutil "github.com/kubeflow/training-operator/pkg/util"
 
 	"github.com/go-logr/logr"
@@ -367,6 +368,10 @@ func (r *TFJobReconciler) DeleteJob(job interface{}) error {
 	r.recorder.Eventf(tfJob, v1.EventTypeNormal, SuccessfulDeleteJobReason, "Deleted job: %v", tfJob.Name)
 	log.Infof("job %s/%s has been deleted", tfJob.Namespace, tfJob.Name)
 	trainingoperatorcommon.DeletedJobsCounterInc(tfJob.Namespace, r.GetFrameworkName())
+
+	// Report job deletion to telemetry
+	telemetry.ReportJobDeletion(tfJob, "tensorflow")
+
 	return nil
 }
 
@@ -400,6 +405,8 @@ func (r *TFJobReconciler) UpdateJobStatus(job interface{}, replicas map[kubeflow
 			// TODO(Jeffwan): requeue job key in reconciler scenarios
 			r.WorkQueue.AddAfter(tfJobKey, time.Duration(*tfJob.Spec.RunPolicy.ActiveDeadlineSeconds)*time.Second)
 		}
+		// Report job started to telemetry
+		telemetry.ReportJobStarted(tfJob, "tensorflow")
 	}
 
 	// For the situation that jobStatus has a restarting condition, and append a running condition,
@@ -457,6 +464,9 @@ func (r *TFJobReconciler) UpdateJobStatus(job interface{}, replicas map[kubeflow
 					}
 					commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.TFJobKind, commonutil.JobSucceededReason), msg)
 					trainingoperatorcommon.SuccessfulJobsCounterInc(tfJob.Namespace, r.GetFrameworkName())
+
+					// Report successful job completion to telemetry
+					telemetry.ReportJobCompletion(tfJob, "tensorflow", true)
 				}
 			}
 		} else {
@@ -474,6 +484,9 @@ func (r *TFJobReconciler) UpdateJobStatus(job interface{}, replicas map[kubeflow
 					}
 					commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.TFJobKind, commonutil.JobSucceededReason), msg)
 					trainingoperatorcommon.SuccessfulJobsCounterInc(tfJob.Namespace, r.GetFrameworkName())
+
+					// Report successful job completion to telemetry
+					telemetry.ReportJobCompletion(tfJob, "tensorflow", true)
 				} else if running > 0 {
 					// Some workers are still running, leave a running condition.
 					msg := fmt.Sprintf("TFJob %s/%s is running.", tfJob.Namespace, tfJob.Name)
@@ -506,6 +519,9 @@ func (r *TFJobReconciler) UpdateJobStatus(job interface{}, replicas map[kubeflow
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobFailed, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.TFJobKind, commonutil.JobFailedReason), msg)
 				trainingoperatorcommon.FailedJobsCounterInc(tfJob.Namespace, r.GetFrameworkName())
+
+				// Report job failure to telemetry with reason
+				telemetry.ReportJobFailure(tfJob, "tensorflow", msg)
 			}
 		}
 	}
@@ -657,6 +673,10 @@ func (r *TFJobReconciler) onOwnerCreateFunc() func(createEvent event.TypedCreate
 		logrus.Info(msg)
 		trainingoperatorcommon.CreatedJobsCounterInc(tfJob.Namespace, r.GetFrameworkName())
 		commonutil.UpdateJobConditions(&tfJob.Status, kubeflowv1.JobCreated, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.TFJobKind, commonutil.JobCreatedReason), msg)
+
+		// Report job creation to telemetry
+		telemetry.ReportJobCreation(tfJob, "tensorflow")
+
 		return true
 	}
 }

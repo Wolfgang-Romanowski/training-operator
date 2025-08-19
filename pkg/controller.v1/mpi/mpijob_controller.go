@@ -58,6 +58,7 @@ import (
 	"github.com/kubeflow/training-operator/pkg/controller.v1/common"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/control"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/expectation"
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 	commonutil "github.com/kubeflow/training-operator/pkg/util"
 )
 
@@ -323,6 +324,10 @@ func (jc *MPIJobReconciler) onOwnerCreateFunc() func(createEvent event.TypedCrea
 		logrus.Info(msg)
 		trainingoperatorcommon.CreatedJobsCounterInc(mpiJob.Namespace, jc.GetFrameworkName())
 		commonutil.UpdateJobConditions(&mpiJob.Status, kubeflowv1.JobCreated, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.MPIJobKind, commonutil.JobCreatedReason), msg)
+
+		// Report job creation to telemetry
+		telemetry.ReportJobCreation(mpiJob, "mpi")
+
 		return true
 	}
 }
@@ -345,6 +350,9 @@ func (jc *MPIJobReconciler) ReconcilePods(
 	if jobStatus.StartTime == nil {
 		now := metav1.Now()
 		jobStatus.StartTime = &now
+
+		// Report job started to telemetry
+		telemetry.ReportJobStarted(mpiJob, "mpi")
 	}
 
 	initializeReplicaStatuses(jobStatus, rtype)
@@ -551,6 +559,10 @@ func (jc *MPIJobReconciler) DeleteJob(job interface{}) error {
 	jc.Recorder.Eventf(mpiJob, corev1.EventTypeNormal, SuccessfulDeleteJobReason, "Deleted job: %v", mpiJob.Name)
 	log.Infof("job %s/%s has been deleted", mpiJob.Namespace, mpiJob.Name)
 	trainingoperatorcommon.DeletedJobsCounterInc(mpiJob.Namespace, jc.GetFrameworkName())
+
+	// Report job deletion to telemetry
+	telemetry.ReportJobDeletion(mpiJob, "mpi")
+
 	return nil
 }
 
@@ -594,6 +606,10 @@ func (jc *MPIJobReconciler) UpdateJobStatus(job interface{}, replicas map[kubefl
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.MPIJobKind, commonutil.JobSucceededReason), msg)
 				trainingoperatorcommon.SuccessfulJobsCounterInc(mpiJob.Namespace, jc.GetFrameworkName())
+
+				// Report successful job completion to telemetry
+				telemetry.ReportJobCompletion(mpiJob, "mpi", true)
+
 				return nil
 			}
 		}
@@ -612,6 +628,9 @@ func (jc *MPIJobReconciler) UpdateJobStatus(job interface{}, replicas map[kubefl
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobFailed, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.MPIJobKind, commonutil.NewReason(kubeflowv1.MPIJobKind, commonutil.JobFailedReason)), msg)
 				trainingoperatorcommon.FailedJobsCounterInc(mpiJob.Namespace, jc.GetFrameworkName())
+
+				// Report job failure to telemetry with reason
+				telemetry.ReportJobFailure(mpiJob, "mpi", msg)
 			}
 		}
 	}

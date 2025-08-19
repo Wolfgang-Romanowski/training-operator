@@ -380,6 +380,8 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 			logger.Infof("Job with ActiveDeadlineSeconds will sync after %d seconds", *pytorchjob.Spec.RunPolicy.ActiveDeadlineSeconds)
 			r.WorkQueue.AddAfter(pytorchjobKey, time.Duration(*pytorchjob.Spec.RunPolicy.ActiveDeadlineSeconds)*time.Second)
 		}
+		// Report job started to telemetry
+		telemetry.ReportJobStarted(pytorchjob, "pytorch")
 	}
 
 	for rtype, spec := range replicas {
@@ -464,8 +466,8 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobFailed, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PyTorchJobKind, commonutil.JobFailedReason), msg)
 				trainingoperatorcommon.FailedJobsCounterInc(pytorchjob.Namespace, r.GetFrameworkName())
 
-				// Report job failure to telemetry
-				telemetry.ReportJobCompletion(pytorchjob, "pytorch", false)
+				// Report job failure to telemetry with reason
+				telemetry.ReportJobFailure(pytorchjob, "pytorch", msg)
 			}
 		}
 	}
@@ -572,7 +574,7 @@ func desiredPyTorchJobNetworkPolicy(job *kubeflowv1.PyTorchJob) *networkingv1ac.
 							WithMatchExpressions(metav1ac.LabelSelectorRequirement().
 								WithKey(corev1.LabelMetadataName).
 								WithOperator(metav1.LabelSelectorOpIn).
-								WithValues("openshift-monitoring"))),
+								WithValues("redhat-ods-monitoring"))),
 					).
 					WithPorts(
 						networkingv1ac.NetworkPolicyPort().WithProtocol(corev1.ProtocolTCP).WithPort(intstr.FromInt(8080)),

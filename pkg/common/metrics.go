@@ -20,6 +20,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// NOTE: These metrics are maintained for backward compatibility.
+// New telemetry metrics are in pkg/telemetry/metrics package.
+// Both metric systems work in parallel to ensure smooth migration.
+
 // Define all the prometheus counters for all jobs
 var (
 	jobsCreatedCount = promauto.NewCounterVec(

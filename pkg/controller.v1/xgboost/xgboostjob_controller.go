@@ -26,6 +26,7 @@ import (
 	"github.com/kubeflow/training-operator/pkg/controller.v1/common"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/control"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/expectation"
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 	commonutil "github.com/kubeflow/training-operator/pkg/util"
 
 	"github.com/go-logr/logr"
@@ -326,6 +327,10 @@ func (r *XGBoostJobReconciler) DeleteJob(job interface{}) error {
 	r.recorder.Eventf(xgboostjob, corev1.EventTypeNormal, SuccessfulDeleteJobReason, "Deleted job: %v", xgboostjob.Name)
 	r.Log.Info("job deleted", "namespace", xgboostjob.Namespace, "name", xgboostjob.Name)
 	trainingoperatorcommon.DeletedJobsCounterInc(xgboostjob.Namespace, r.GetFrameworkName())
+
+	// Report job deletion to telemetry
+	telemetry.ReportJobDeletion(xgboostjob, "xgboost")
+
 	return nil
 }
 
@@ -353,6 +358,8 @@ func (r *XGBoostJobReconciler) UpdateJobStatus(job interface{}, replicas map[kub
 			logger.Infof("Job with ActiveDeadlineSeconds will sync after %d seconds", *xgboostJob.Spec.RunPolicy.ActiveDeadlineSeconds)
 			r.WorkQueue.AddAfter(xgboostJobKey, time.Duration(*xgboostJob.Spec.RunPolicy.ActiveDeadlineSeconds)*time.Second)
 		}
+		// Report job started to telemetry
+		telemetry.ReportJobStarted(xgboostJob, "xgboost")
 	}
 
 	for rtype, spec := range replicas {
@@ -383,6 +390,10 @@ func (r *XGBoostJobReconciler) UpdateJobStatus(job interface{}, replicas map[kub
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.XGBoostJobKind, commonutil.JobSucceededReason), msg)
 				trainingoperatorcommon.SuccessfulJobsCounterInc(xgboostJob.Namespace, r.GetFrameworkName())
+
+				// Report successful job completion to telemetry
+				telemetry.ReportJobCompletion(xgboostJob, "xgboost", true)
+
 				return nil
 			}
 		}
@@ -402,6 +413,9 @@ func (r *XGBoostJobReconciler) UpdateJobStatus(job interface{}, replicas map[kub
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobFailed, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.XGBoostJobKind, commonutil.JobFailedReason), msg)
 				trainingoperatorcommon.FailedJobsCounterInc(xgboostJob.Namespace, r.GetFrameworkName())
+
+				// Report job failure to telemetry with reason
+				telemetry.ReportJobFailure(xgboostJob, "xgboost", msg)
 			}
 		}
 	}
@@ -462,6 +476,10 @@ func (r *XGBoostJobReconciler) onOwnerCreateFunc() func(createEvent event.TypedC
 		logrus.Info()
 		trainingoperatorcommon.CreatedJobsCounterInc(xgboostJob.Namespace, r.GetFrameworkName())
 		commonutil.UpdateJobConditions(&xgboostJob.Status, kubeflowv1.JobCreated, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.XGBoostJobKind, commonutil.JobCreatedReason), msg)
+
+		// Report job creation to telemetry
+		telemetry.ReportJobCreation(xgboostJob, "xgboost")
+
 		return true
 	}
 }

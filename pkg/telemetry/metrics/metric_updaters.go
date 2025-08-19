@@ -1,10 +1,6 @@
 package metrics
 
-// =================================================================
-// RHOAI Adoption Metrics - Core Business Intelligence
-// These metrics answer: Are customers using RHOAI images? Which versions?
-// =================================================================
-
+// Existing RHOAI Adoption Metrics
 func UpdateImageSourceMetric(framework, imageSource, rhoaiVersion string) {
 	TrainingJobsByImageSource.WithLabelValues(framework, imageSource, rhoaiVersion).Inc()
 }
@@ -27,10 +23,46 @@ func RecordVersionMigration(framework, fromVersion, toVersion string) {
 	}
 }
 
-// =================================================================
-// Compliance Metrics - Required for Platform Monitoring
-// =================================================================
+// NEW: GPU/Accelerator Metrics (REQUIRED)
+func RecordAcceleratorHoursConsumed(framework, acceleratorType, imageSource string, hours float64) {
+	AcceleratorHoursConsumed.WithLabelValues(framework, acceleratorType, imageSource).Add(hours)
+}
 
+func IncrementAcceleratorUtilization(framework, acceleratorType string, count float64) {
+	AcceleratorUtilization.WithLabelValues(framework, acceleratorType).Add(count)
+}
+
+func DecrementAcceleratorUtilization(framework, acceleratorType string, count float64) {
+	AcceleratorUtilization.WithLabelValues(framework, acceleratorType).Sub(count)
+}
+
+// NEW: Kueue Metrics (REQUIRED)
+func RecordKueueManagedJob(framework, queueName, imageSource string) {
+	KueueManagedJobs.WithLabelValues(framework, queueName, imageSource).Inc()
+}
+
+func IncrementKueueQueueDepth(queueName string) {
+	KueueQueueDepth.WithLabelValues(queueName).Inc()
+}
+
+func DecrementKueueQueueDepth(queueName string) {
+	KueueQueueDepth.WithLabelValues(queueName).Dec()
+}
+
+// NEW: Job Lifecycle Metrics
+func RecordJobQueueDuration(framework, imageSource string, duration float64) {
+	JobQueueDuration.WithLabelValues(framework, imageSource).Observe(duration)
+}
+
+func RecordJobRunDuration(framework, imageSource, status string, duration float64) {
+	JobRunDuration.WithLabelValues(framework, imageSource, status).Observe(duration)
+}
+
+func RecordJobFailureReason(framework, reason, imageSource string) {
+	JobFailureReasons.WithLabelValues(framework, reason, imageSource).Inc()
+}
+
+// Compliance Metrics
 func RecordJobCreated(framework string) {
 	TrainingJobsTotal.WithLabelValues(framework).Inc()
 }

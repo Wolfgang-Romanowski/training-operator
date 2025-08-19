@@ -85,6 +85,7 @@ func main() {
 	var webhookSecretName string
 	var clientQps int
 	var clientBurst int
+	var telemetryEnabled bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -93,7 +94,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionID, "leader-election-id", "1ca428e5.training-operator.kubeflow.org", "The ID for leader election.")
 	flag.Var(&enabledSchemes, "enable-scheme", "Enable scheme(s) as --enable-scheme=tfjob --enable-scheme=pytorchjob, case insensitive."+
-		" Now supporting TFJob, PyTorchJob, XGBoostJob, PaddleJob, JAXJob. By default, all supported schemes will be enabled.")
+		" Now supporting TFJob, PyTorchJob, XGBoostJob, PaddleJob, JAXJob, MPIJob. By default, all supported schemes will be enabled.")
 	flag.StringVar(&gangSchedulerName, "gang-scheduler-name", "", "Now Supporting volcano and scheduler-plugins."+
 		" Note: If you set another scheduler name, the training-operator assumes it's the scheduler-plugins.")
 	flag.StringVar(&namespace, "namespace", os.Getenv(EnvKubeflowNamespace), "The namespace to monitor kubeflow jobs. If unset, it monitors all namespaces cluster-wide."+
@@ -101,6 +102,8 @@ func main() {
 	flag.IntVar(&controllerThreads, "controller-threads", 1, "Number of worker threads used by the controller.")
 	flag.IntVar(&clientQps, "kube-api-qps", 20, "QPS indicates the maximum QPS to the master from this client.")
 	flag.IntVar(&clientBurst, "kube-api-burst", 30, "Maximum burst for throttle.")
+	flag.BoolVar(&telemetryEnabled, "telemetry-enabled", true, "Enable telemetry metrics collection. Set to false to disable.")
+
 	// PyTorch related flags
 	flag.StringVar(&config.Config.PyTorchInitContainerImage, "pytorch-init-container-image",
 		config.PyTorchInitContainerImageDefault, "The image for pytorch init container")
@@ -116,7 +119,7 @@ func main() {
 	// Cert generation flags
 	flag.IntVar(&webhookServerPort, "webhook-server-port", 9443, "Endpoint port for the webhook server.")
 	flag.StringVar(&webhookServiceName, "webhook-service-name", "training-operator", "Name of the Service used as part of the DNSName")
-	flag.StringVar(&webhookSecretName, "webhook-secret-name", "training-operator-webhook-cert", "Name of the Secret to store CA  and server certs")
+	flag.StringVar(&webhookSecretName, "webhook-secret-name", "training-operator-webhook-cert", "Name of the Secret to store CA and server certs")
 
 	opts := zap.Options{
 		Development:     true,
@@ -127,10 +130,16 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// Initialize telemetry metrics
-	// Per RHOAISTRAT-575: All metrics exposed on standard :8080 endpoint
-	setupLog.Info("Initializing telemetry metrics")
-	metrics.EnsureInitialized()
+	// Initialize telemetry metrics if enabled
+	if telemetryEnabled {
+		setupLog.Info("Initializing telemetry metrics")
+		metrics.EnsureInitialized()
+		// Set environment variable for telemetry
+		os.Setenv("TELEMETRY_ENABLED", "true")
+	} else {
+		setupLog.Info("Telemetry metrics disabled")
+		os.Setenv("TELEMETRY_ENABLED", "false")
+	}
 
 	var cacheOpts cache.Options
 	if namespace != "" {
@@ -247,7 +256,7 @@ func setupProbeEndpoints(mgr ctrl.Manager, certsReady <-chan struct{}) {
 	// Wait for the webhook server to be listening before advertising the
 	// training-operator replica as ready. This allows users to wait with sending the first
 	// requests, requiring webhooks, until the training-operator deployment is available, so
-	// that the early requests are not rejected during the traininig-operator's startup.
+	// that the early requests are not rejected during the training-operator's startup.
 	// We wrap the call to GetWebhookServer in a closure to delay calling
 	// the function, otherwise a not fully-initialized webhook server (without
 	// ready certs) fails the start of the manager.

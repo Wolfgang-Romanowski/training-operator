@@ -11,7 +11,6 @@ import (
 var (
 	// =================================================================
 	// PRIMARY BUSINESS METRICS - RHOAI Runtime Adoption
-	// These are the CORE metrics for understanding customer behavior
 	// =================================================================
 
 	TrainingJobsByImageSource = prometheus.NewCounterVec(
@@ -39,8 +38,77 @@ var (
 	)
 
 	// =================================================================
+	// GPU/ACCELERATOR METRICS - REQUIRED by RHOAISTRAT-575 page 8
+	// =================================================================
+
+	AcceleratorHoursConsumed = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "training_accelerator_hours_consumed_total",
+			Help: "Total accelerator hours consumed by training jobs normalized per OBSDA-1087",
+		},
+		[]string{"framework", "accelerator_type", "image_source"},
+	)
+
+	AcceleratorUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "training_accelerator_active_count",
+			Help: "Current accelerators in use by training jobs",
+		},
+		[]string{"framework", "accelerator_type"},
+	)
+
+	// =================================================================
+	// KUEUE INTEGRATION METRICS - REQUIRED by RHOAISTRAT-575 page 8
+	// =================================================================
+
+	KueueManagedJobs = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "training_kueue_managed_jobs_total",
+			Help: "Jobs managed through Kueue workload manager",
+		},
+		[]string{"framework", "queue_name", "image_source"},
+	)
+
+	KueueQueueDepth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "training_kueue_queue_depth",
+			Help: "Current depth of Kueue queues for training jobs",
+		},
+		[]string{"queue_name"},
+	)
+
+	// =================================================================
+	// JOB LIFECYCLE METRICS - For SLO Monitoring
+	// =================================================================
+
+	JobQueueDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "training_job_queue_duration_seconds",
+			Help:    "Time from job creation to first pod scheduling",
+			Buckets: prometheus.ExponentialBuckets(10, 2, 10), // 10s to 5120s
+		},
+		[]string{"framework", "image_source"},
+	)
+
+	JobRunDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "training_job_run_duration_seconds",
+			Help:    "Time from job start to completion",
+			Buckets: prometheus.ExponentialBuckets(60, 2, 12), // 1min to 68hours
+		},
+		[]string{"framework", "image_source", "status"},
+	)
+
+	JobFailureReasons = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "training_job_failure_reasons_total",
+			Help: "Job failures categorized by reason",
+		},
+		[]string{"framework", "reason", "image_source"},
+	)
+
+	// =================================================================
 	// COMPLIANCE METRICS - Required by RHOAISTRAT-575
-	// These ensure we meet platform monitoring requirements
 	// =================================================================
 
 	TrainingJobsTotal = prometheus.NewCounterVec(
@@ -48,7 +116,7 @@ var (
 			Name: "training_jobs_created_total",
 			Help: "Total training jobs created",
 		},
-		[]string{"framework"}, // Minimal labels for cardinality
+		[]string{"framework"},
 	)
 
 	TrainingJobsCompleted = prometheus.NewCounterVec(
@@ -69,7 +137,6 @@ var (
 
 	// =================================================================
 	// INTERNAL TRACKING - Not exported to Telemetry
-	// These support metric calculation but stay local
 	// =================================================================
 
 	jobStartTimes = make(map[string]time.Time)
@@ -83,6 +150,19 @@ func InitMetrics() {
 		ActiveRHOAIVersionDistribution,
 		RHOAIVersionMigration,
 
+		// GPU/Accelerator metrics - REQUIRED
+		AcceleratorHoursConsumed,
+		AcceleratorUtilization,
+
+		// Kueue metrics - REQUIRED
+		KueueManagedJobs,
+		KueueQueueDepth,
+
+		// Job lifecycle metrics
+		JobQueueDuration,
+		JobRunDuration,
+		JobFailureReasons,
+
 		// Compliance metrics
 		TrainingJobsTotal,
 		TrainingJobsCompleted,
@@ -95,6 +175,13 @@ func RecordJobStart(jobKey string) {
 	jobMutex.Lock()
 	defer jobMutex.Unlock()
 	jobStartTimes[jobKey] = time.Now()
+}
+
+func GetJobStartTime(jobKey string) (time.Time, bool) {
+	jobMutex.RLock()
+	defer jobMutex.RUnlock()
+	startTime, exists := jobStartTimes[jobKey]
+	return startTime, exists
 }
 
 func RemoveJobStartTime(jobKey string) {

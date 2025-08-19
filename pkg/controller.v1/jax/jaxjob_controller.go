@@ -26,6 +26,7 @@ import (
 	"github.com/kubeflow/training-operator/pkg/controller.v1/common"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/control"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/expectation"
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 	commonutil "github.com/kubeflow/training-operator/pkg/util"
 
 	"github.com/go-logr/logr"
@@ -314,6 +315,10 @@ func (r *JAXJobReconciler) DeleteJob(job interface{}) error {
 	r.recorder.Eventf(jaxjob, corev1.EventTypeNormal, control.SuccessfulDeletePodReason, "Deleted job: %v", jaxjob.Name)
 	logrus.Info("job deleted", "namespace", jaxjob.Namespace, "name", jaxjob.Name)
 	trainingoperatorcommon.DeletedJobsCounterInc(jaxjob.Namespace, r.GetFrameworkName())
+
+	// Report job deletion to telemetry
+	telemetry.ReportJobDeletion(jaxjob, "jax")
+
 	return nil
 }
 
@@ -347,6 +352,10 @@ func (r *JAXJobReconciler) UpdateJobStatus(job interface{},
 	if jobStatus.StartTime == nil {
 		now := metav1.Now()
 		jobStatus.StartTime = &now
+
+		// Report job started to telemetry
+		telemetry.ReportJobStarted(jaxjob, "jax")
+
 		// enqueue a sync to check if job past ActiveDeadlineSeconds
 		if jaxjob.Spec.RunPolicy.ActiveDeadlineSeconds != nil {
 			logger.Infof("Job with ActiveDeadlineSeconds will sync after %d seconds", *jaxjob.Spec.RunPolicy.ActiveDeadlineSeconds)
@@ -379,6 +388,9 @@ func (r *JAXJobReconciler) UpdateJobStatus(job interface{},
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.JAXJobKind, commonutil.JobSucceededReason), msg)
 				trainingoperatorcommon.SuccessfulJobsCounterInc(jaxjob.Namespace, r.GetFrameworkName())
+
+				// Report successful job completion to telemetry
+				telemetry.ReportJobCompletion(jaxjob, "jax", true)
 			} else if running > 0 {
 				// Some workers are still running, leave a running condition.
 				msg := fmt.Sprintf("JAXJob %s/%s is running.",
@@ -402,6 +414,9 @@ func (r *JAXJobReconciler) UpdateJobStatus(job interface{},
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobFailed, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.JAXJobKind, commonutil.JobFailedReason), msg)
 				trainingoperatorcommon.FailedJobsCounterInc(jaxjob.Namespace, r.GetFrameworkName())
+
+				// Report job failure to telemetry with reason
+				telemetry.ReportJobFailure(jaxjob, "jax", msg)
 			}
 		}
 	}
@@ -473,6 +488,10 @@ func (r *JAXJobReconciler) onOwnerCreateFunc() func(createEvent event.TypedCreat
 		logrus.Info(msg)
 		trainingoperatorcommon.CreatedJobsCounterInc(jaxjob.Namespace, r.GetFrameworkName())
 		commonutil.UpdateJobConditions(&jaxjob.Status, kubeflowv1.JobCreated, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.JAXJobKind, commonutil.JobCreatedReason), msg)
+
+		// Report job creation to telemetry
+		telemetry.ReportJobCreation(jaxjob, "jax")
+
 		return true
 	}
 }

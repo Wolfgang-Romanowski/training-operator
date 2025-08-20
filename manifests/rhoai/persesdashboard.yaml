@@ -1,108 +1,75 @@
-# manifests/rhoai/rhoai-adoption-dashboard.yaml
+# manifests/rhoai/persesdashboard.yaml
+# Perses dashboard for training operator telemetry metrics per RHOAISTRAT-575
 apiVersion: perses.dev/v1alpha1
 kind: PersesDashboard
 metadata:
-  name: training-operator-rhoai-adoption
+  name: training-operator-telemetry
   namespace: opendatahub
   labels:
     app.kubernetes.io/name: training-operator
     app.kubernetes.io/component: dashboard
     app.kubernetes.io/part-of: training-operator
-    monitoring.opendatahub.io/dashboard: "true"  # REQUIRED for discovery
-    rhoai.opendatahub.io/dashboard: "true"       # REQUIRED for RHOAI UI
 spec:
-  datasources:
-    - name: prometheus
-      default: true
-      plugin:
-        kind: "PrometheusDatasource"
-        spec:
-          directUrl: "https://thanos-querier.openshift-monitoring.svc.cluster.local:9091"
-  
-  duration: "6h"
-  refreshInterval: "30s"
-  
-  layouts:
-    - kind: Grid
-      spec:
-        display:
-          title: "RHOAI Training Operator Adoption Metrics"
-          collapse:
-            open: true
-        items:
-          - x: 0
-            y: 0
-            width: 12
-            height: 4
-            content:
-              "$ref": "#/spec/panels/0"
-          - x: 12
-            y: 0
-            width: 12
-            height: 4
-            content:
-              "$ref": "#/spec/panels/1"
-          - x: 0
-            y: 4
-            width: 24
-            height: 6
-            content:
-              "$ref": "#/spec/panels/2"
-  
+  datasource:
+    type: prometheus
+    name: training-operator-prometheus
+  display:
+    name: "Training Operator - Customer Telemetry"
+    description: "Customer usage analytics and adoption metrics for Training Operator"
+  duration: 24h
+  refreshInterval: 5m
   panels:
-    - kind: GaugeChart
-      spec:
-        display:
-          name: "RHOAI Image Adoption Rate"
-          description: "Percentage of jobs using RHOAI official images"
-        plugin:
-          kind: GaugeChart
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: "openshift:training_rhoai_adoption_percentage"
-        thresholds:
-          - value: 80
-            color: "#73BF69"
-          - value: 50
-            color: "#F9B82E"
-          - value: 0
-            color: "#BF2B45"
-    
-    - kind: BarChart
-      spec:
-        display:
-          name: "RHOAI Version Distribution"
-          description: "Usage by RHOAI runtime version"
-        plugin:
-          kind: BarChart
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: "openshift:training_rhoai_version_usage"
-    
     - kind: TimeSeriesChart
       spec:
         display:
-          name: "Version Migration Trends"
-          description: "Migration velocity to newer versions"
-        plugin:
-          kind: TimeSeriesChart
+          name: "Runtime Version Deprecation Analysis"
+          description: "Track PyTorch and TensorFlow version usage for deprecation decisions"
         queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: "openshift:training_version_migration_velocity"
-        yAxis:
-          show: true
-          label: "Jobs/Week"
-          format:
-            unit: "decimal"
+          - expr: openshift:training_version_deprecation_analysis
+            legend: "{{version}}"
+        legend:
+          position: bottom
+          
+    - kind: PieChart
+      spec:
+        display:
+          name: "Official Runtime Adoption Rate"
+          description: "Percentage of jobs using official runtime images"
+        queries:
+          - expr: openshift:training_rhoai_adoption_rate
+            legend: "Official Runtime Adoption %"
+        legend:
+          position: right
+          
+    - kind: BarChart
+      spec:
+        display:
+          name: "Enterprise vs Non-Enterprise Usage"
+          description: "Customer segmentation for business decisions"
+        queries:
+          - expr: openshift:training_enterprise_percentage
+            legend: "Enterprise %"
+        legend:
+          position: bottom
+          
+    - kind: TimeSeriesChart
+      spec:
+        display:
+          name: "Raw Image Version Usage"
+          description: "Active jobs by runtime version"
+        queries:
+          - expr: training_operator_image_version_usage
+            legend: "{{version}}"
+        legend:
+          position: bottom
+          
+    - kind: CounterChart
+      spec:
+        display:
+          name: "Image Source Preferences"
+          description: "Total jobs by image source over time"
+        queries:
+          - expr: sum by (image_source) (rate(training_operator_image_source_preference_total[5m]))
+            legend: "{{image_source}}"
+        legend:
+          position: right

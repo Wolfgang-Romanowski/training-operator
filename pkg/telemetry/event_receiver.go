@@ -16,12 +16,11 @@ package telemetry
 
 import (
 	"context"
-	"os"
-	"strings"
 	"sync"
 
 	"k8s.io/klog/v2"
 
+	"github.com/kubeflow/training-operator/pkg/telemetry/config"
 	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 )
 
@@ -55,22 +54,25 @@ type JobEventData struct {
 	Metadata     map[string]string
 }
 
-// Initialize sets up the telemetry system.
+// InitializeTelemetryReceiver sets up the telemetry event receiver system.
 // It checks environment variables to determine if telemetry is enabled and
 // initializes the metrics collection system when appropriate.
-func Initialize() error {
+// This is the main entry point for telemetry initialization.
+func InitializeTelemetryReceiver() error {
 	var err error
 	initOnce.Do(func() {
-		enabled := os.Getenv("TELEMETRY_ENABLED")
-		telemetryEnabled = strings.ToLower(enabled) != "false"
+		// Initialize configuration first
+		config.Initialize()
+		telemetryEnabled = config.IsTelemetryConfigEnabled()
 
 		if !telemetryEnabled {
-			klog.Info("Telemetry is disabled via TELEMETRY_ENABLED env var")
+			klog.Info("Telemetry is disabled via configuration")
 			return
 		}
 
 		klog.Info("Initializing telemetry event receiver")
 
+		// Initialize metrics registry
 		err = metrics.Initialize()
 		if err != nil {
 			klog.ErrorS(err, "Failed to initialize telemetry metrics")
@@ -83,31 +85,30 @@ func Initialize() error {
 	return err
 }
 
-// IsEnabled returns true if telemetry collection is enabled and initialized.
-// This checks both the environment variable configuration and successful
-// initialization of the metrics system.
-func IsEnabled() bool {
+// IsTelemetryEnabled returns true if telemetry collection is enabled and initialized.
+// This checks both the configuration and successful initialization of the metrics system.
+func IsTelemetryEnabled() bool {
 	return telemetryEnabled && isInitialized
 }
 
 // isTelemetryEnabled provides backward compatibility for existing telemetry checks.
-// It is an alias for IsEnabled() to maintain compatibility with existing code.
+// It is an alias for IsTelemetryEnabled() to maintain compatibility with existing code.
 func isTelemetryEnabled() bool {
-	return IsEnabled()
+	return IsTelemetryEnabled()
 }
 
 // ReportJobCreation processes a training job creation event.
 // It extracts image information from the job specification and updates
 // telemetry metrics to track version usage and customer patterns.
 func ReportJobCreation(job interface{}, framework string) {
-	if !IsEnabled() {
+	if !IsTelemetryEnabled() {
 		if !isInitialized {
-			if err := Initialize(); err != nil {
+			if err := InitializeTelemetryReceiver(); err != nil {
 				klog.V(4).InfoS("Telemetry initialization failed, skipping event", "error", err)
 				return
 			}
 		}
-		if !IsEnabled() {
+		if !IsTelemetryEnabled() {
 			return
 		}
 	}
@@ -126,7 +127,7 @@ func ReportJobCreation(job interface{}, framework string) {
 // This tracks when jobs transition from pending to running state for
 // performance and reliability analysis.
 func ReportJobStarted(job interface{}, framework string) {
-	if !IsEnabled() {
+	if !IsTelemetryEnabled() {
 		return
 	}
 
@@ -144,7 +145,7 @@ func ReportJobStarted(job interface{}, framework string) {
 // It handles both successful completions and failures, tracking job outcomes
 // for success rate analysis and debugging patterns.
 func ReportJobCompletion(job interface{}, framework string, succeeded bool) {
-	if !IsEnabled() {
+	if !IsTelemetryEnabled() {
 		return
 	}
 
@@ -167,7 +168,7 @@ func ReportJobCompletion(job interface{}, framework string, succeeded bool) {
 // It captures specific failure reasons to help identify common failure patterns
 // and areas for product improvement.
 func ReportJobFailure(job interface{}, framework string, reason string) {
-	if !IsEnabled() {
+	if !IsTelemetryEnabled() {
 		return
 	}
 
@@ -188,7 +189,7 @@ func ReportJobFailure(job interface{}, framework string, reason string) {
 // It ensures proper cleanup of telemetry tracking to prevent metric drift
 // and maintain accurate active job counts.
 func ReportJobDeletion(job interface{}, framework string) {
-	if !IsEnabled() {
+	if !IsTelemetryEnabled() {
 		return
 	}
 
@@ -206,7 +207,7 @@ func ReportJobDeletion(job interface{}, framework string) {
 // This function maintains compatibility with existing telemetry collection code
 // that uses the event-based interface.
 func ReceiveJobEvent(ctx context.Context, event JobEventData) {
-	if !IsEnabled() {
+	if !IsTelemetryEnabled() {
 		return
 	}
 

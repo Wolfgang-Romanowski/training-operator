@@ -120,13 +120,13 @@ func initializeCRDInstanceTracking() {
 
 	// Initialize tracked versions with zero values
 	for _, v := range trackedVersions {
-		imageVersionTracker.topVersions[v] = 0
+		getImageVersionTracker().initializeVersion(v)
 		TrainingOperatorImageVersionUsage.WithLabelValues(v).Set(0)
 	}
 
 	// Start background cleanup and monitoring routines
-	go imageVersionTracker.cleanupRoutine()
-	go imageVersionTracker.cardinalityMonitor()
+	go getImageVersionTracker().cleanupRoutine()
+	go getImageVersionTracker().cardinalityMonitor()
 
 	klog.Info("CRD instance tracking metrics initialized")
 }

@@ -11,7 +11,7 @@ resources:
   - kubeflow-training-roles.yaml
   - monitor-config.yaml              # Correct filename for pod monitor
   - customresourcestatemetrics.yaml  
-  - rhoai-telemetry-dashboard.yaml   
+  - persesdashboard.yaml              # Perses dashboard for telemetry metrics
   - namespace-patch.yaml
 
 configMapGenerator:

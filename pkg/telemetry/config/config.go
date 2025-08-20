@@ -143,8 +143,9 @@ func Get() *TelemetryConfig {
 	return config
 }
 
-// IsEnabled returns whether telemetry is enabled
-func IsEnabled() bool {
+// IsTelemetryConfigEnabled returns whether telemetry is enabled in configuration.
+// This only checks configuration, not initialization status.
+func IsTelemetryConfigEnabled() bool {
 	return Get().Enabled
 }
 

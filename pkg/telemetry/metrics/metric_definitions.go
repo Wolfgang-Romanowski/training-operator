@@ -80,6 +80,18 @@ type ImageVersionTracker struct {
 	maxEntries      int
 }
 
+// getImageVersionTracker returns the singleton instance of ImageVersionTracker.
+// This ensures a single tracker is used across all metric operations.
+func getImageVersionTracker() *ImageVersionTracker {
+	return imageVersionTracker
+}
+
+// initializeVersion sets up tracking for a specific version.
+// This method is used during initialization to prepare version tracking.
+func (ivt *ImageVersionTracker) initializeVersion(version string) {
+	ivt.topVersions[version] = 0
+}
+
 // VersionData contains metadata about a tracked training job version including
 // classification information for telemetry analysis.
 type VersionData struct {
@@ -112,19 +124,20 @@ func RecordJobCreation(framework, version, imageSource, customerType, namespace,
 	normalizedVersion := normalizeVersionForTracking(framework, version)
 	key := normalizedVersion + "/" + namespace + "/" + name
 
-	imageVersionTracker.mu.Lock()
-	defer imageVersionTracker.mu.Unlock()
+	tracker := getImageVersionTracker()
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
 
-	if len(imageVersionTracker.activeVersions) >= imageVersionTracker.maxEntries {
-		imageVersionTracker.removeOldestLocked()
+	if len(tracker.activeVersions) >= tracker.maxEntries {
+		tracker.removeOldestLocked()
 	}
 
 	isNew := false
-	if existing, ok := imageVersionTracker.activeVersions[key]; ok {
+	if existing, ok := tracker.activeVersions[key]; ok {
 		existing.LastUpdated = time.Now()
 	} else {
 		isNew = true
-		imageVersionTracker.activeVersions[key] = &VersionData{
+		tracker.activeVersions[key] = &VersionData{
 			Version:      normalizedVersion,
 			ImageSource:  imageSource,
 			CustomerType: customerType,
@@ -134,7 +147,7 @@ func RecordJobCreation(framework, version, imageSource, customerType, namespace,
 	}
 
 	if isNew {
-		imageVersionTracker.topVersions[normalizedVersion]++
+		tracker.topVersions[normalizedVersion]++
 		TrainingOperatorImageVersionUsage.WithLabelValues(normalizedVersion).Inc()
 
 		TrainingOperatorImageSourcePreference.WithLabelValues(imageSource).Inc()
@@ -161,16 +174,17 @@ func RecordJobDeletion(framework, version, namespace, name string) {
 	normalizedVersion := normalizeVersionForTracking(framework, version)
 	key := normalizedVersion + "/" + namespace + "/" + name
 
-	imageVersionTracker.mu.Lock()
-	defer imageVersionTracker.mu.Unlock()
+	tracker := getImageVersionTracker()
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
 
-	if _, ok := imageVersionTracker.activeVersions[key]; ok {
-		if imageVersionTracker.topVersions[normalizedVersion] > 0 {
-			imageVersionTracker.topVersions[normalizedVersion]--
+	if _, ok := tracker.activeVersions[key]; ok {
+		if tracker.topVersions[normalizedVersion] > 0 {
+			tracker.topVersions[normalizedVersion]--
 			TrainingOperatorImageVersionUsage.WithLabelValues(normalizedVersion).Dec()
 		}
 
-		delete(imageVersionTracker.activeVersions, key)
+		delete(tracker.activeVersions, key)
 
 		klog.V(4).InfoS("Recorded job deletion", "version", normalizedVersion, "namespace", namespace, "name", name)
 	}
@@ -180,9 +194,10 @@ func RecordJobDeletion(framework, version, namespace, name string) {
 // GetActiveJobCount returns the number of active jobs being tracked.
 // This is useful for monitoring system load and debugging metric cardinality.
 func GetActiveJobCount() int {
-	imageVersionTracker.mu.RLock()
-	defer imageVersionTracker.mu.RUnlock()
-	return len(imageVersionTracker.activeVersions)
+	tracker := getImageVersionTracker()
+	tracker.mu.RLock()
+	defer tracker.mu.RUnlock()
+	return len(tracker.activeVersions)
 }
 
 // GetActiveVersionCount is an alias for GetActiveJobCount for backward compatibility.
@@ -193,11 +208,12 @@ func GetActiveVersionCount() int {
 // GetVersionDistribution returns the distribution of versions across all jobs.
 // This provides insights into version adoption patterns across the cluster.
 func GetVersionDistribution() map[string]int {
-	imageVersionTracker.mu.RLock()
-	defer imageVersionTracker.mu.RUnlock()
+	tracker := getImageVersionTracker()
+	tracker.mu.RLock()
+	defer tracker.mu.RUnlock()
 
 	dist := make(map[string]int)
-	for _, data := range imageVersionTracker.activeVersions {
+	for _, data := range tracker.activeVersions {
 		dist[data.Version]++
 	}
 	return dist
@@ -206,13 +222,14 @@ func GetVersionDistribution() map[string]int {
 // GetMetricsSummary returns a summary of all metrics for debugging.
 // This includes active job counts, tracked versions, and cardinality limits.
 func GetMetricsSummary() map[string]interface{} {
-	imageVersionTracker.mu.RLock()
-	defer imageVersionTracker.mu.RUnlock()
+	tracker := getImageVersionTracker()
+	tracker.mu.RLock()
+	defer tracker.mu.RUnlock()
 
 	return map[string]interface{}{
-		"active_jobs":      len(imageVersionTracker.activeVersions),
-		"tracked_versions": trackedVersions,
-		"version_counts":   imageVersionTracker.topVersions,
+		"active_jobs":      len(tracker.activeVersions),
+		"tracked_versions": GetTrackedVersions(),
+		"version_counts":   tracker.topVersions,
 		"max_timeseries":   10,
 		"metrics_count":    3,
 	}

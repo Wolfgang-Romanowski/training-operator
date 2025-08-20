@@ -1,5 +1,6 @@
-# manifests/base/monitoring/servicemonitor.yaml
-# UPDATED: Now scrapes otel-collector as required by RHOAISTRAT-575
+# manifests/base/monitoring/training-operator-servicemonitor.yaml
+# ServiceMonitor to enable Prometheus scraping of OTEL collector metrics
+# Per RHOAISTRAT-575 federation pattern requirements
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -12,7 +13,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: otel-collector
+      app.kubernetes.io/name: otel-collector-service
       app.kubernetes.io/component: telemetry-gateway
   endpoints:
   - port: prometheus

@@ -5,7 +5,7 @@ metadata:
   name: training-operator-otel-collector
   namespace: opendatahub
   labels:
-    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/name: otel-collector-service
     app.kubernetes.io/component: telemetry-gateway
     app.kubernetes.io/part-of: training-operator
     monitoring.opendatahub.io/scrape: "true"

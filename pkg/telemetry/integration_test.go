@@ -18,8 +18,9 @@ import (
 // TestCRDInstanceTrackingCompliance validates CRD instance tracking compliance
 func TestCRDInstanceTrackingCompliance(t *testing.T) {
 	// Initialize metrics
-	metrics.EnsureInitialized()
-	metrics.InitializeMetrics()
+	if err := metrics.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize metrics: %v", err)
+	}
 
 	// Test case 1: Verify CRD instance creation tracking
 	t.Run("CRDInstanceCreationTracking", func(t *testing.T) {
@@ -170,7 +171,9 @@ func TestCRDInstanceTrackingCompliance(t *testing.T) {
 // TestVersionNormalization validates version normalization for cardinality
 func TestVersionNormalization(t *testing.T) {
 	// Initialize metrics
-	metrics.InitializeMetrics()
+	if err := metrics.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize metrics: %v", err)
+	}
 
 	testCases := []struct {
 		imageName       string
@@ -320,7 +323,9 @@ func createTestJobForFramework(framework string) interface{} {
 
 // BenchmarkTelemetryPerformance validates that telemetry doesn't impact performance
 func BenchmarkTelemetryPerformance(b *testing.B) {
-	metrics.EnsureInitialized()
+	if err := metrics.Initialize(); err != nil {
+		b.Fatalf("Failed to initialize metrics: %v", err)
+	}
 
 	job := &kubeflowv1.PyTorchJob{
 		ObjectMeta: metav1.ObjectMeta{

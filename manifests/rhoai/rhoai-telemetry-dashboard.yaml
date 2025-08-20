@@ -22,31 +22,54 @@ spec:
     - kind: TimeSeriesChart
       spec:
         display:
-          name: "Runtime Image Version Distribution"
-          description: "Helps determine which image versions can be deprecated"
+          name: "Runtime Version Deprecation Analysis"
+          description: "Track PyTorch and TensorFlow version usage for deprecation decisions"
         queries:
-          - expr: openshift:training_image_version_distribution
-            legend: "{{framework}}-{{version}} ({{image_source}})"
+          - expr: openshift:training_version_deprecation_analysis
+            legend: "{{version}}"
         legend:
           position: bottom
           
     - kind: PieChart
       spec:
         display:
-          name: "Customer Runtime Preference"
-          description: "RHOAI vs Community vs Custom image usage"
+          name: "RHOAI Runtime Adoption Rate"
+          description: "Percentage of jobs using RHOAI official images"
         queries:
-          - expr: sum by (image_source) (openshift:training_runtime_preference_percentage)
+          - expr: openshift:training_rhoai_adoption_rate
+            legend: "RHOAI Adoption %"
         legend:
           position: right
           
     - kind: BarChart
       spec:
         display:
-          name: "Framework + Accelerator Usage"
-          description: "Popular combinations for capacity planning"
+          name: "Enterprise vs Non-Enterprise Usage"
+          description: "Customer segmentation for business decisions"
         queries:
-          - expr: topk(10, openshift:training_framework_accelerator_usage)
-            legend: "{{framework}} on {{accelerator_type}}"
+          - expr: openshift:training_enterprise_percentage
+            legend: "Enterprise %"
         legend:
           position: bottom
+          
+    - kind: TimeSeriesChart
+      spec:
+        display:
+          name: "Raw Image Version Usage"
+          description: "Active jobs by runtime version"
+        queries:
+          - expr: training_operator_image_version_usage
+            legend: "{{version}}"
+        legend:
+          position: bottom
+          
+    - kind: CounterChart
+      spec:
+        display:
+          name: "Image Source Preferences"
+          description: "Total jobs by image source over time"
+        queries:
+          - expr: sum by (image_source) (rate(training_operator_image_source_preference_total[5m]))
+            legend: "{{image_source}}"
+        legend:
+          position: right

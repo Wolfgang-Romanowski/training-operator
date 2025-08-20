@@ -1,3 +1,17 @@
+// Copyright 2025 The Kubeflow Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package telemetry
 
 import (
@@ -12,8 +26,9 @@ import (
 	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 )
 
-// convertEventToMetrics processes training job events and converts them to
-// telemetry metrics with appropriate timeout protection.
+// convertEventToMetrics processes training job events and converts them to telemetry metrics.
+// It applies appropriate timeout protection to ensure event processing doesn't block
+// the main reconciliation loop.
 func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	if !isTelemetryEnabled() {
 		return
@@ -38,8 +53,9 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	}
 }
 
-// convertJobCreatedToMetrics processes job creation events by extracting image
-// information, analyzing customer type, and updating telemetry metrics.
+// convertJobCreatedToMetrics processes job creation events.
+// It extracts container image information, analyzes customer type, and updates
+// telemetry metrics for version tracking and usage pattern analysis.
 func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
 	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
@@ -51,7 +67,7 @@ func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
 	name := metaObj.GetName()
 	framework := strings.ToLower(event.Framework)
 
-	customerInfo := metrics.ClassifyCustomer(namespace, event.Job)
+	customerInfo := ClassifyCustomerUsage(namespace, event.Job)
 	customerType := "non-enterprise"
 	if customerInfo != nil {
 		customerType = customerInfo.CustomerType
@@ -65,7 +81,7 @@ func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
 
 	imageAnalysis := analyzers.AnalyzeContainerImage(image)
 
-	metrics.TrackImageVersion(
+	metrics.RecordJobCreation(
 		framework,
 		imageAnalysis.RHOAIVersion,
 		imageAnalysis.ImageSource,
@@ -84,8 +100,9 @@ func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
 		"acceleratorType", imageAnalysis.AcceleratorType)
 }
 
-// convertJobCompletedToMetrics processes job completion events, logging the final
-// status of training jobs for telemetry analysis.
+// convertJobCompletedToMetrics processes job completion events.
+// It logs the final status of training jobs (succeeded or failed) for
+// success rate analysis and reliability tracking.
 func convertJobCompletedToMetrics(ctx context.Context, event JobEventData, succeeded bool) {
 	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
@@ -103,8 +120,9 @@ func convertJobCompletedToMetrics(ctx context.Context, event JobEventData, succe
 	klog.V(3).InfoS("Job completion event processed", "namespace", namespace, "name", name, "status", status, "framework", event.Framework)
 }
 
-// convertJobDeletedToMetrics processes job deletion events by cleaning up
-// associated telemetry tracking for the deleted training job.
+// convertJobDeletedToMetrics processes job deletion events.
+// It removes associated telemetry tracking for the deleted training job
+// to maintain accurate active job counts and prevent metric drift.
 func convertJobDeletedToMetrics(ctx context.Context, event JobEventData) {
 	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
@@ -118,7 +136,7 @@ func convertJobDeletedToMetrics(ctx context.Context, event JobEventData) {
 	image := analyzers.ExtractContainerImage(event.Job, framework)
 	if image != "" {
 		imageAnalysis := analyzers.AnalyzeContainerImage(image)
-		metrics.RemoveImageVersion(framework, imageAnalysis.RHOAIVersion, namespace, name)
+		metrics.RecordJobDeletion(framework, imageAnalysis.RHOAIVersion, namespace, name)
 	}
 
 	klog.V(3).InfoS("Job deletion metrics updated", "namespace", namespace, "name", name, "framework", framework)

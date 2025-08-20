@@ -9,10 +9,10 @@ namePrefix: kubeflow-
 resources:
   - ../base
   - kubeflow-training-roles.yaml
-  - rhoai-monitor-config.yaml        # FIXED: was "monitor.yaml" 
-  - customresourcestatemetrics.yaml  # FIXED: was "custom-resource-metrics.yaml"
-  - rhoai-telemetry-dashboard.yaml   # FIXED: was "rhoai-adoption-dashboard.yaml"
-  - namespace-patch.yaml             # ADDED: ensure cluster-monitoring label
+  - monitor-config.yaml              # Correct filename for pod monitor
+  - customresourcestatemetrics.yaml  
+  - rhoai-telemetry-dashboard.yaml   
+  - namespace-patch.yaml
 
 configMapGenerator:
   - name: rhoai-config
@@ -47,9 +47,8 @@ secretGenerator:
   - name: training-operator-telemetry-secret
     options:
       disableNameSuffixHash: true
-    literals:
-      - telemetry-token=""        # To be filled by RHOAI operator
-      - cluster-id=""             # To be filled by RHOAI operator
+    envs:
+      - telemetry-secret.env      # Populated by RHOAI operator at deployment time
   - name: training-operator-webhook-cert
     options:
       disableNameSuffixHash: true

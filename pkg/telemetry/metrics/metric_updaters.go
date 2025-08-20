@@ -1,53 +1,26 @@
+// Copyright 2025 The Kubeflow Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package metrics
 
 import (
 	"k8s.io/klog/v2"
 )
 
-// RecordImageVersionUsage increments the usage count for a specific image version
-// in telemetry metrics tracking.
-func RecordImageVersionUsage(version string) {
-	if !IsInitialized() {
-		if err := Initialize(); err != nil {
-			klog.ErrorS(err, "Failed to initialize metrics")
-			return
-		}
-	}
-
-	TrainingOperatorImageVersionUsage.WithLabelValues(version).Inc()
-	klog.V(4).InfoS("Recorded image version usage", "version", version)
-}
-
-// RecordImageSourcePreference increments the counter for customer preference
-// of a specific image source (rhoai_official, community, custom).
-func RecordImageSourcePreference(imageSource string) {
-	if !IsInitialized() {
-		if err := Initialize(); err != nil {
-			klog.ErrorS(err, "Failed to initialize metrics")
-			return
-		}
-	}
-
-	TrainingOperatorImageSourcePreference.WithLabelValues(imageSource).Inc()
-	klog.V(4).InfoS("Recorded image source preference", "imageSource", imageSource)
-}
-
-// RecordEnterpriseAdoption increments the enterprise adoption counter
-// for the specified customer type (enterprise or non-enterprise).
-func RecordEnterpriseAdoption(customerType string) {
-	if !IsInitialized() {
-		if err := Initialize(); err != nil {
-			klog.ErrorS(err, "Failed to initialize metrics")
-			return
-		}
-	}
-
-	TrainingOperatorEnterpriseAdoption.WithLabelValues(customerType).Inc()
-	klog.V(4).InfoS("Recorded enterprise adoption", "customerType", customerType)
-}
-
-// RecordReconcileError increments the error counter for a specific controller
-// when reconciliation operations fail.
+// RecordReconcileError increments the error counter for a specific controller.
+// This tracks reconciliation failures to identify controllers that may need
+// attention or debugging.
 func RecordReconcileError(controller string) {
 	reg := Get()
 	if reg == nil {
@@ -63,8 +36,9 @@ func RecordReconcileError(controller string) {
 	klog.V(4).InfoS("Recorded reconcile error", "controller", controller)
 }
 
-// RecordReconcileDuration records the time taken for a controller reconciliation
-// operation in seconds.
+// RecordReconcileDuration records the time taken for a controller reconciliation.
+// The duration is measured in seconds and helps identify performance bottlenecks
+// in the reconciliation loop.
 func RecordReconcileDuration(controller string, duration float64) {
 	reg := Get()
 	if reg == nil {
@@ -80,8 +54,9 @@ func RecordReconcileDuration(controller string, duration float64) {
 	klog.V(4).InfoS("Recorded reconcile duration", "controller", controller, "duration", duration)
 }
 
-// RecordInternalFailure increments the internal failure counter for debugging
-// purposes when unexpected errors occur in specific components.
+// RecordInternalFailure increments the internal failure counter for debugging.
+// It tracks unexpected errors in specific components with detailed reason codes
+// to help diagnose systemic issues.
 func RecordInternalFailure(component, reason string) {
 	reg := Get()
 	if reg == nil {

@@ -574,7 +574,7 @@ func desiredPyTorchJobNetworkPolicy(job *kubeflowv1.PyTorchJob) *networkingv1ac.
 							WithMatchExpressions(metav1ac.LabelSelectorRequirement().
 								WithKey(corev1.LabelMetadataName).
 								WithOperator(metav1.LabelSelectorOpIn).
-								WithValues("redhat-ods-monitoring"))),
+								WithValues("openshift-monitoring"))),
 					).
 					WithPorts(
 						networkingv1ac.NetworkPolicyPort().WithProtocol(corev1.ProtocolTCP).WithPort(intstr.FromInt(8080)),

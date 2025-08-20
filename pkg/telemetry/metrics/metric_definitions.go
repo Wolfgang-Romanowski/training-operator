@@ -1,6 +1,21 @@
+// Copyright 2025 The Kubeflow Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package metrics
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +27,8 @@ import (
 )
 
 var (
+	// TrainingOperatorImageVersionUsage tracks active training jobs by RHOAI runtime version
+	// for deprecation analysis and version adoption monitoring.
 	TrainingOperatorImageVersionUsage = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "training_operator_image_version_usage",
@@ -20,6 +37,8 @@ var (
 		[]string{"version"},
 	)
 
+	// TrainingOperatorImageSourcePreference tracks total jobs by image source to understand
+	// customer runtime preferences between RHOAI official, community, and custom images.
 	TrainingOperatorImageSourcePreference = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_operator_image_source_preference_total",
@@ -28,6 +47,8 @@ var (
 		[]string{"image_source"},
 	)
 
+	// TrainingOperatorEnterpriseAdoption differentiates enterprise vs non-enterprise adoption
+	// of RHOAI runtimes for customer segmentation analysis.
 	TrainingOperatorEnterpriseAdoption = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_operator_enterprise_adoption_total",
@@ -36,7 +57,8 @@ var (
 		[]string{"customer_type"},
 	)
 
-
+	// imageVersionTracker manages the lifecycle of active version tracking with automatic
+	// cleanup and cardinality management to comply with Red Hat monitoring limits.
 	imageVersionTracker = &ImageVersionTracker{
 		activeVersions:  make(map[string]*VersionData),
 		topVersions:     make(map[string]int),
@@ -45,27 +67,21 @@ var (
 		maxAge:          24 * time.Hour,
 		maxEntries:      10000,
 	}
-
-	crdTrackingInitOnce sync.Once
-
-	trackedVersions = []string{
-		"pytorch-2.4",
-		"pytorch-2.3",
-		"tensorflow-2.15",
-		"tensorflow-2.14",
-		"other",
-	}
 )
 
+// ImageVersionTracker manages active training job version tracking with automatic cleanup
+// and cardinality limits to ensure compliance with Red Hat monitoring requirements.
 type ImageVersionTracker struct {
 	mu              sync.RWMutex
 	activeVersions  map[string]*VersionData // key: version/namespace/name
-	topVersions     map[string]int          // Track top 5 versions only
+	topVersions     map[string]int          // Track top 5 versions only for cardinality control
 	cleanupInterval time.Duration
 	maxAge          time.Duration
 	maxEntries      int
 }
 
+// VersionData contains metadata about a tracked training job version including
+// classification information for telemetry analysis.
 type VersionData struct {
 	Version      string
 	ImageSource  string
@@ -74,51 +90,24 @@ type VersionData struct {
 	LastUpdated  time.Time
 }
 
-// CustomerInfo represents customer classification data
-type CustomerInfo struct {
-	CustomerType     string
-	UsageSource      string
-	NamespacePattern string
-	TenantHints      []string
-	CachedAt         time.Time
+// Customer classification logic is imported from the telemetry package to avoid duplication.
+// CustomerInfo and ResourceInfo are defined in pkg/telemetry/customer_analysis.go
+
+// GetTrackedVersions returns the list of tracked versions for external use.
+// These versions align with RHOAI supported runtime versions and recording rules.
+func GetTrackedVersions() []string {
+	return []string{
+		"pytorch-2.4",
+		"pytorch-2.3",
+		"tensorflow-2.15",
+		"tensorflow-2.14",
+		"other",
+	}
 }
 
-// ResourceInfo for interface compatibility
-type ResourceInfo struct {
-	CPUCategory    string
-	MemoryCategory string
-	GPUCategory    string
-	StorageType    string
-}
-
-// InitializeMetrics initializes all telemetry metrics and starts background
-// cleanup routines for tracking active job versions.
-func InitializeMetrics() {
-	crdTrackingInitOnce.Do(func() {
-		metrics.Registry.MustRegister(
-			TrainingOperatorImageVersionUsage,
-			TrainingOperatorImageSourcePreference,
-			TrainingOperatorEnterpriseAdoption,
-		)
-
-		for _, v := range trackedVersions {
-			imageVersionTracker.topVersions[v] = 0
-			TrainingOperatorImageVersionUsage.WithLabelValues(v).Set(0)
-		}
-
-		go imageVersionTracker.cleanupRoutine()
-
-		klog.Info("Telemetry metrics initialized successfully")
-	})
-}
-
-// InitCRDInstanceTracking initializes metrics for backward compatibility with existing code.
-func InitCRDInstanceTracking() {
-	InitializeMetrics()
-}
-
-// RecordJobCreation records metrics when a new training job is created,
-// tracking image version usage, source preferences, and enterprise adoption.
+// RecordJobCreation records metrics when a new training job is created.
+// It tracks image version usage, source preferences, and enterprise adoption patterns
+// while maintaining cardinality limits per Red Hat monitoring requirements.
 func RecordJobCreation(framework, version, imageSource, customerType, namespace, name string) {
 	normalizedVersion := normalizeVersionForTracking(framework, version)
 	key := normalizedVersion + "/" + namespace + "/" + name
@@ -166,12 +155,8 @@ func RecordJobCreation(framework, version, imageSource, customerType, namespace,
 	}
 }
 
-// TrackImageVersion records image version usage for backward compatibility with existing code.
-func TrackImageVersion(framework, version, imageSource, customerType, namespace, name string) {
-	RecordJobCreation(framework, version, imageSource, customerType, namespace, name)
-}
-
 // RecordJobDeletion decrements job tracking metrics when a training job is deleted.
+// This ensures accurate active job counts and prevents metric drift over time.
 func RecordJobDeletion(framework, version, namespace, name string) {
 	normalizedVersion := normalizeVersionForTracking(framework, version)
 	key := normalizedVersion + "/" + namespace + "/" + name
@@ -191,80 +176,22 @@ func RecordJobDeletion(framework, version, namespace, name string) {
 	}
 }
 
-// RemoveImageVersion removes image version tracking for backward compatibility with existing code.
-func RemoveImageVersion(framework, version, namespace, name string) {
-	RecordJobDeletion(framework, version, namespace, name)
-}
 
-// ClassifyCustomer analyzes job metadata and namespace patterns to determine
-// whether the job represents enterprise or non-enterprise usage.
-func ClassifyCustomer(namespace string, job interface{}) *CustomerInfo {
-	customerInfo := &CustomerInfo{
-		CustomerType:     "non-enterprise",
-		UsageSource:      "unknown",
-		NamespacePattern: "unknown",
-		TenantHints:      []string{},
-		CachedAt:         time.Now(),
-	}
-
-	var annotations map[string]string
-	var labels map[string]string
-
-	if metaAccessor, ok := job.(metav1.Object); ok {
-		annotations = metaAccessor.GetAnnotations()
-		labels = metaAccessor.GetLabels()
-	}
-
-	if annotations != nil {
-		if source, exists := annotations["rhods.openshiftai.io/source"]; exists {
-			if source == "dashboard" || source == "ui" || source == "workbench" {
-				customerInfo.CustomerType = "enterprise"
-				customerInfo.UsageSource = "rhoai-ui"
-			}
-		}
-
-		if _, exists := annotations["notebooks.openshiftai.io/notebook-name"]; exists {
-			customerInfo.CustomerType = "enterprise"
-			customerInfo.UsageSource = "rhoai-notebook"
-		}
-	}
-
-	if labels != nil {
-		if env, exists := labels["environment"]; exists {
-			if env == "production" || env == "prod" {
-				customerInfo.CustomerType = "enterprise"
-			}
-		}
-	}
-
-	namespaceLower := strings.ToLower(namespace)
-	if strings.Contains(namespaceLower, "prod") ||
-		strings.Contains(namespaceLower, "production") {
-		customerInfo.CustomerType = "enterprise"
-		customerInfo.NamespacePattern = "production"
-	}
-
-	return customerInfo
-}
-
-// classifyCustomerUsage provides backward compatibility for existing customer classification code.
-func classifyCustomerUsage(namespace string, job interface{}) *CustomerInfo {
-	return ClassifyCustomer(namespace, job)
-}
-
-// GetActiveJobCount returns the number of active jobs being tracked
+// GetActiveJobCount returns the number of active jobs being tracked.
+// This is useful for monitoring system load and debugging metric cardinality.
 func GetActiveJobCount() int {
 	imageVersionTracker.mu.RLock()
 	defer imageVersionTracker.mu.RUnlock()
 	return len(imageVersionTracker.activeVersions)
 }
 
-// GetActiveVersionCount is an alias for GetActiveJobCount
+// GetActiveVersionCount is an alias for GetActiveJobCount for backward compatibility.
 func GetActiveVersionCount() int {
 	return GetActiveJobCount()
 }
 
-// GetVersionDistribution returns the distribution of versions across all jobs
+// GetVersionDistribution returns the distribution of versions across all jobs.
+// This provides insights into version adoption patterns across the cluster.
 func GetVersionDistribution() map[string]int {
 	imageVersionTracker.mu.RLock()
 	defer imageVersionTracker.mu.RUnlock()
@@ -276,7 +203,8 @@ func GetVersionDistribution() map[string]int {
 	return dist
 }
 
-// GetMetricsSummary returns a summary of all metrics for debugging
+// GetMetricsSummary returns a summary of all metrics for debugging.
+// This includes active job counts, tracked versions, and cardinality limits.
 func GetMetricsSummary() map[string]interface{} {
 	imageVersionTracker.mu.RLock()
 	defer imageVersionTracker.mu.RUnlock()
@@ -290,38 +218,47 @@ func GetMetricsSummary() map[string]interface{} {
 	}
 }
 
-// normalizeVersionForTracking maps framework versions to tracked categories
-// to maintain metric cardinality limits.
+// normalizeVersionForTracking maps framework versions to tracked categories.
+// It maintains metric cardinality limits per Red Hat Monitoring Handbook by
+// normalizing various version formats to a consistent set of tracked versions.
+// Returns exact version strings that match recording rule patterns.
 func normalizeVersionForTracking(framework, version string) string {
+	trackedVersions := GetTrackedVersions()
+	// Direct match for known tracked versions (excluding "other")
 	for _, tracked := range trackedVersions[:len(trackedVersions)-1] {
 		if version == tracked {
 			return tracked
 		}
 	}
 
-	if strings.Contains(strings.ToLower(version), "pytorch") {
-		if strings.Contains(version, "2.4") || strings.Contains(version, "2-4") {
+	// Normalize PyTorch versions to match recording rule regex patterns
+	versionLower := strings.ToLower(version)
+	if strings.Contains(versionLower, "pytorch") {
+		if strings.Contains(version, "2.4") || strings.Contains(version, "2-4") || strings.Contains(version, "241") {
 			return "pytorch-2.4"
 		}
-		if strings.Contains(version, "2.3") || strings.Contains(version, "2-3") {
+		if strings.Contains(version, "2.3") || strings.Contains(version, "2-3") || strings.Contains(version, "230") {
 			return "pytorch-2.3"
 		}
 	}
 
-	if strings.Contains(strings.ToLower(version), "tensorflow") {
-		if strings.Contains(version, "2.15") || strings.Contains(version, "2-15") {
+	// Normalize TensorFlow versions to match recording rule regex patterns
+	if strings.Contains(versionLower, "tensorflow") || strings.Contains(versionLower, "tf") {
+		if strings.Contains(version, "2.15") || strings.Contains(version, "2-15") || strings.Contains(version, "215") {
 			return "tensorflow-2.15"
 		}
-		if strings.Contains(version, "2.14") || strings.Contains(version, "2-14") {
+		if strings.Contains(version, "2.14") || strings.Contains(version, "2-14") || strings.Contains(version, "214") {
 			return "tensorflow-2.14"
 		}
 	}
 
+	// Fall back to "other" for unrecognized versions
 	return "other"
 }
 
-// simplifyCustomerTypeForClassification normalizes customer types to binary
-// enterprise/non-enterprise classification for consistent metrics.
+// simplifyCustomerTypeForClassification normalizes customer types to binary classification.
+// It converts various customer type indicators to either "enterprise" or "non-enterprise"
+// to maintain consistent metrics and comply with privacy requirements.
 func simplifyCustomerTypeForClassification(customerType string) string {
 	customerTypeLower := strings.ToLower(customerType)
 	if customerTypeLower == "enterprise" ||
@@ -332,16 +269,9 @@ func simplifyCustomerTypeForClassification(customerType string) string {
 	return "non-enterprise"
 }
 
-// analyzeJobResources provides placeholder resource analysis for future extension.
-func analyzeJobResources(job interface{}) *ResourceInfo {
-	return &ResourceInfo{
-		CPUCategory:    "medium",
-		MemoryCategory: "medium",
-		GPUCategory:    "none",
-		StorageType:    "local",
-	}
-}
 
+// cleanupRoutine runs periodically to remove stale job tracking entries.
+// It prevents unbounded memory growth by removing entries older than maxAge.
 func (ivt *ImageVersionTracker) cleanupRoutine() {
 	ticker := time.NewTicker(ivt.cleanupInterval)
 	defer ticker.Stop()
@@ -363,6 +293,8 @@ func (ivt *ImageVersionTracker) cleanupRoutine() {
 	}
 }
 
+// removeOldestLocked removes the oldest tracked entry when maxEntries is exceeded.
+// This method must be called with the lock already held.
 func (ivt *ImageVersionTracker) removeOldestLocked() {
 	var oldestKey string
 	var oldestTime time.Time
@@ -382,4 +314,134 @@ func (ivt *ImageVersionTracker) removeOldestLocked() {
 		}
 		delete(ivt.activeVersions, oldestKey)
 	}
+}
+
+// cardinalityMonitor continuously monitors metric cardinality.
+// It ensures compliance with Red Hat Monitoring Handbook limits (10 timeseries max)
+// and automatically consolidates metrics when approaching limits.
+func (ivt *ImageVersionTracker) cardinalityMonitor() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	const maxTimeseries = 10
+	const maxVersionTimeseries = 5
+	const maxSourceTimeseries = 3
+	const maxCustomerTimeseries = 2
+
+	for range ticker.C {
+		// Check current metric cardinality against Red Hat limits
+		versionCount := 0
+		sourceCount := 0
+		customerCount := 0
+
+		// Count active version timeseries
+		ivt.mu.RLock()
+		for _, count := range ivt.topVersions {
+			if count > 0 {
+				versionCount++
+			}
+		}
+		ivt.mu.RUnlock()
+
+		// Get source preference cardinality from Prometheus
+		sourceMetrics, _ := prometheus.DefaultGatherer.Gather()
+		for _, mf := range sourceMetrics {
+			if mf.GetName() == "training_operator_image_source_preference_total" {
+				sourceCount = len(mf.GetMetric())
+			}
+			if mf.GetName() == "training_operator_enterprise_adoption_total" {
+				customerCount = len(mf.GetMetric())
+			}
+		}
+
+		totalTimeseries := versionCount + sourceCount + customerCount
+
+		if totalTimeseries > maxTimeseries {
+			klog.Errorf("CARDINALITY VIOLATION: Total timeseries %d exceeds Red Hat limit of %d",
+				totalTimeseries, maxTimeseries)
+			klog.Errorf("Breakdown: versions=%d, sources=%d, customers=%d",
+				versionCount, sourceCount, customerCount)
+			
+			// Attempt to reduce cardinality by consolidating "other" versions
+			ivt.consolidateOtherVersions()
+		}
+
+		if versionCount > maxVersionTimeseries {
+			klog.Warningf("Version cardinality %d exceeds recommended limit of %d",
+				versionCount, maxVersionTimeseries)
+		}
+
+		klog.V(4).InfoS("Cardinality check passed",
+			"totalTimeseries", totalTimeseries,
+			"maxAllowed", maxTimeseries,
+			"versions", versionCount,
+			"sources", sourceCount,
+			"customers", customerCount)
+	}
+}
+
+// consolidateOtherVersions reduces cardinality by merging less common versions.
+// When cardinality limits are approached, this method consolidates the least-used
+// tracked versions into the "other" category to maintain compliance.
+func (ivt *ImageVersionTracker) consolidateOtherVersions() {
+	ivt.mu.Lock()
+	defer ivt.mu.Unlock()
+
+	// Find least used tracked version and merge into "other"
+	minCount := int(^uint(0) >> 1) // Max int
+	minVersion := ""
+
+	for version, count := range ivt.topVersions {
+		if version != "other" && count < minCount && count > 0 {
+			minCount = count
+			minVersion = version
+		}
+	}
+
+	if minVersion != "" && minCount < 5 {
+		// Merge the least used version into "other"
+		ivt.topVersions["other"] += minCount
+		ivt.topVersions[minVersion] = 0
+		
+		// Update metrics
+		TrainingOperatorImageVersionUsage.WithLabelValues("other").Add(float64(minCount))
+		TrainingOperatorImageVersionUsage.WithLabelValues(minVersion).Set(0)
+		
+		klog.InfoS("Consolidated version to reduce cardinality",
+			"version", minVersion,
+			"count", minCount,
+			"action", "merged into 'other'")
+	}
+}
+
+// ValidateMetricCardinality validates that metrics stay within Red Hat limits.
+// It returns an error if the total timeseries count exceeds the maximum allowed
+// per Red Hat Monitoring Handbook requirements.
+func ValidateMetricCardinality() error {
+	const maxTimeseries = 10
+	
+	gatherer := prometheus.DefaultGatherer
+	metricFamilies, err := gatherer.Gather()
+	if err != nil {
+		return err
+	}
+
+	totalTimeseries := 0
+	for _, mf := range metricFamilies {
+		name := mf.GetName()
+		if strings.HasPrefix(name, "training_operator_") {
+			count := len(mf.GetMetric())
+			totalTimeseries += count
+			klog.V(5).InfoS("Metric cardinality",
+				"metric", name,
+				"timeseries", count)
+		}
+	}
+
+	if totalTimeseries > maxTimeseries {
+		return fmt.Errorf("metric cardinality %d exceeds Red Hat limit of %d timeseries",
+			totalTimeseries, maxTimeseries)
+	}
+
+	return nil
 }

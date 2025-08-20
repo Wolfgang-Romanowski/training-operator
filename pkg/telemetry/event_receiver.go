@@ -1,3 +1,17 @@
+// Copyright 2025 The Kubeflow Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package telemetry
 
 import (
@@ -18,6 +32,7 @@ var (
 )
 
 // EventType represents different lifecycle events for training jobs.
+// These events track the complete lifecycle from creation to deletion.
 type EventType string
 
 const (
@@ -28,8 +43,9 @@ const (
 	JobDeletedEvent   EventType = "deleted"
 )
 
-// JobEventData contains all relevant information for a training job event
-// including job metadata and framework details.
+// JobEventData contains all relevant information for a training job event.
+// It captures the event type, framework details, and job metadata needed
+// for comprehensive telemetry analysis.
 type JobEventData struct {
 	EventType    EventType
 	Framework    string
@@ -39,8 +55,9 @@ type JobEventData struct {
 	Metadata     map[string]string
 }
 
-// Initialize sets up the telemetry system, checking environment variables
-// and initializing metrics collection if enabled.
+// Initialize sets up the telemetry system.
+// It checks environment variables to determine if telemetry is enabled and
+// initializes the metrics collection system when appropriate.
 func Initialize() error {
 	var err error
 	initOnce.Do(func() {
@@ -66,19 +83,22 @@ func Initialize() error {
 	return err
 }
 
-// IsEnabled returns true if telemetry collection is both enabled via environment
-// variable and successfully initialized.
+// IsEnabled returns true if telemetry collection is enabled and initialized.
+// This checks both the environment variable configuration and successful
+// initialization of the metrics system.
 func IsEnabled() bool {
 	return telemetryEnabled && isInitialized
 }
 
 // isTelemetryEnabled provides backward compatibility for existing telemetry checks.
+// It is an alias for IsEnabled() to maintain compatibility with existing code.
 func isTelemetryEnabled() bool {
 	return IsEnabled()
 }
 
-// ReportJobCreation processes a training job creation event, extracting
-// image information and updating telemetry metrics accordingly.
+// ReportJobCreation processes a training job creation event.
+// It extracts image information from the job specification and updates
+// telemetry metrics to track version usage and customer patterns.
 func ReportJobCreation(job interface{}, framework string) {
 	if !IsEnabled() {
 		if !isInitialized {
@@ -102,7 +122,9 @@ func ReportJobCreation(job interface{}, framework string) {
 	convertEventToMetrics(ctx, event)
 }
 
-// ReportJobStarted processes a training job started event for telemetry collection.
+// ReportJobStarted processes a training job started event.
+// This tracks when jobs transition from pending to running state for
+// performance and reliability analysis.
 func ReportJobStarted(job interface{}, framework string) {
 	if !IsEnabled() {
 		return
@@ -118,8 +140,9 @@ func ReportJobStarted(job interface{}, framework string) {
 	convertEventToMetrics(ctx, event)
 }
 
-// ReportJobCompletion processes a training job completion event, handling both
-// successful completions and failures based on the succeeded parameter.
+// ReportJobCompletion processes a training job completion event.
+// It handles both successful completions and failures, tracking job outcomes
+// for success rate analysis and debugging patterns.
 func ReportJobCompletion(job interface{}, framework string, succeeded bool) {
 	if !IsEnabled() {
 		return
@@ -140,8 +163,9 @@ func ReportJobCompletion(job interface{}, framework string, succeeded bool) {
 	convertEventToMetrics(ctx, event)
 }
 
-// ReportJobFailure processes a training job failure event with specific failure
-// reason for detailed telemetry analysis.
+// ReportJobFailure processes a training job failure event.
+// It captures specific failure reasons to help identify common failure patterns
+// and areas for product improvement.
 func ReportJobFailure(job interface{}, framework string, reason string) {
 	if !IsEnabled() {
 		return
@@ -160,8 +184,9 @@ func ReportJobFailure(job interface{}, framework string, reason string) {
 	convertEventToMetrics(ctx, event)
 }
 
-// ReportJobDeletion processes a training job deletion event, cleaning up
-// associated telemetry tracking for the deleted job.
+// ReportJobDeletion processes a training job deletion event.
+// It ensures proper cleanup of telemetry tracking to prevent metric drift
+// and maintain accurate active job counts.
 func ReportJobDeletion(job interface{}, framework string) {
 	if !IsEnabled() {
 		return
@@ -177,8 +202,9 @@ func ReportJobDeletion(job interface{}, framework string) {
 	convertEventToMetrics(ctx, event)
 }
 
-// ReceiveJobEvent processes job events for backward compatibility with existing
-// telemetry collection code.
+// ReceiveJobEvent processes job events for backward compatibility.
+// This function maintains compatibility with existing telemetry collection code
+// that uses the event-based interface.
 func ReceiveJobEvent(ctx context.Context, event JobEventData) {
 	if !IsEnabled() {
 		return

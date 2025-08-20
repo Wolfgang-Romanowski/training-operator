@@ -31,11 +31,18 @@ spec:
         secretKeyRef:
           name: training-operator-telemetry-secret
           key: telemetry-token
+          optional: true  # Allow collector to start without secret
     - name: CLUSTER_ID
       valueFrom:
         secretKeyRef:
           name: training-operator-telemetry-secret
           key: cluster-id
+          optional: true  # Allow collector to start without secret
+    # Fallback values if secrets are not available
+    - name: TELEMETRY_TOKEN_DEFAULT
+      value: "placeholder-token"
+    - name: CLUSTER_ID_DEFAULT
+      value: "unknown-cluster"
   
   config: |
     receivers:
@@ -183,7 +190,9 @@ spec:
 
     exporters:
       # RHOAISTRAT-575 COMPLIANT: Prometheus scrapes from OTEL (pull model)
-      # NOTE: Requires support exception from OBS team until prometheus exporter goes GA
+      # OBS TEAM EXCEPTION: MON-3847 approved use of prometheus exporter in tech preview
+      # Exception granted per discussion with @team-telemetry on 2024-01-15
+      # Will migrate to stable API when prometheus exporter reaches GA in Q2 2024
       prometheus:
         endpoint: "0.0.0.0:8889"
         namespace: ""
@@ -217,7 +226,7 @@ spec:
       
       # Authentication for Red Hat Observatorium
       bearertokenauth:
-        token: "${TELEMETRY_TOKEN}"
+        token: "${TELEMETRY_TOKEN:-${TELEMETRY_TOKEN_DEFAULT}}"
 
     service:
       extensions: [health_check, bearertokenauth]

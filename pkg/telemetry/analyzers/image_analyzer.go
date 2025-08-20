@@ -1,3 +1,17 @@
+// Copyright 2025 The Kubeflow Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzers
 
 import (
@@ -9,7 +23,9 @@ import (
 	kubeflowv1 "github.com/kubeflow/training-operator/pkg/apis/kubeflow.org/v1"
 )
 
-// ImageAnalysisResult contains image analysis results
+// ImageAnalysisResult contains comprehensive image analysis results.
+// It identifies the image source, RHOAI version, and hardware acceleration
+// requirements for telemetry and usage pattern analysis.
 type ImageAnalysisResult struct {
 	ImageSource     string // rhoai_official, community, custom
 	RHOAIVersion    string // pytorch-2.5, tensorflow-2.16, etc
@@ -59,8 +75,9 @@ var (
 	}
 )
 
-// AnalyzeContainerImage analyzes a container image and returns image source,
-// RHOAI version information, and detected accelerator type for telemetry collection.
+// AnalyzeContainerImage analyzes a container image for telemetry collection.
+// It identifies the image source (RHOAI official, community, or custom),
+// extracts version information, and detects hardware accelerator requirements.
 func AnalyzeContainerImage(image string) ImageAnalysisResult {
 	if image == "" {
 		return ImageAnalysisResult{
@@ -115,8 +132,9 @@ func AnalyzeContainerImage(image string) ImageAnalysisResult {
 	return result
 }
 
-// detectAcceleratorType detects GPU or accelerator type from container image name
-// by checking for keywords like cuda, nvidia, rocm, habana, etc.
+// detectAcceleratorType detects GPU or accelerator type from container image name.
+// It identifies hardware acceleration requirements by matching keywords
+// like cuda, nvidia, rocm, habana in the image name.
 func detectAcceleratorType(imageLower string) string {
 	acceleratorPatterns := map[string]string{
 		"cuda":   "nvidia.com/gpu",
@@ -139,6 +157,8 @@ func detectAcceleratorType(imageLower string) string {
 }
 
 // GetImageRegistry extracts the registry hostname from a container image URL.
+// This helps identify the source of container images for security and
+// compliance tracking.
 func GetImageRegistry(image string) string {
 	parts := strings.Split(image, "/")
 	if len(parts) > 0 {
@@ -148,6 +168,8 @@ func GetImageRegistry(image string) string {
 }
 
 // IsRHOAIImage returns true if the container image is from an official RHOAI registry.
+// This function helps identify customers using official Red Hat provided images
+// versus community or custom alternatives.
 func IsRHOAIImage(image string) bool {
 	imageLower := strings.ToLower(image)
 	for _, registry := range rhoaiRegistries {
@@ -158,9 +180,9 @@ func IsRHOAIImage(image string) bool {
 	return false
 }
 
-
-// ExtractContainerImage extracts the primary container image from training jobs
-// across all supported frameworks (PyTorch, TensorFlow, MPI, XGBoost, Paddle, JAX).
+// ExtractContainerImage extracts the primary container image from training jobs.
+// It supports all Kubeflow training operator frameworks including PyTorch,
+// TensorFlow, MPI, XGBoost, Paddle, and JAX.
 func ExtractContainerImage(job interface{}, framework string) string {
 	frameworkLower := strings.ToLower(framework)
 
@@ -195,8 +217,9 @@ func ExtractContainerImage(job interface{}, framework string) string {
 	return ""
 }
 
-// ExtractPyTorchImageFromJob extracts the container image from a PyTorchJob,
-// checking Master replica first, then Worker replica.
+// ExtractPyTorchImageFromJob extracts the container image from a PyTorchJob.
+// It prioritizes the Master replica image, falling back to Worker replica
+// if Master is not defined.
 func ExtractPyTorchImageFromJob(job *kubeflowv1.PyTorchJob) string {
 	if job == nil || job.Spec.PyTorchReplicaSpecs == nil {
 		return ""
@@ -215,8 +238,9 @@ func ExtractPyTorchImageFromJob(job *kubeflowv1.PyTorchJob) string {
 	return ""
 }
 
-// ExtractTensorFlowImageFromJob extracts the container image from a TFJob,
-// checking Chief replica first, then Worker replica.
+// ExtractTensorFlowImageFromJob extracts the container image from a TFJob.
+// It prioritizes the Chief replica image, falling back to Worker replica
+// if Chief is not defined.
 func ExtractTensorFlowImageFromJob(job *kubeflowv1.TFJob) string {
 	if job == nil || job.Spec.TFReplicaSpecs == nil {
 		return ""
@@ -235,8 +259,9 @@ func ExtractTensorFlowImageFromJob(job *kubeflowv1.TFJob) string {
 	return ""
 }
 
-// ExtractMPIImageFromJob extracts the container image from an MPIJob
-// by checking the Launcher replica.
+// ExtractMPIImageFromJob extracts the container image from an MPIJob.
+// It retrieves the image from the Launcher replica which coordinates
+// the MPI job execution.
 func ExtractMPIImageFromJob(job *kubeflowv1.MPIJob) string {
 	if job == nil || job.Spec.MPIReplicaSpecs == nil {
 		return ""
@@ -250,8 +275,9 @@ func ExtractMPIImageFromJob(job *kubeflowv1.MPIJob) string {
 	return ""
 }
 
-// ExtractXGBoostImageFromJob extracts the container image from an XGBoostJob
-// by checking the Master replica.
+// ExtractXGBoostImageFromJob extracts the container image from an XGBoostJob.
+// It retrieves the image from the Master replica which coordinates
+// the distributed XGBoost training.
 func ExtractXGBoostImageFromJob(job *kubeflowv1.XGBoostJob) string {
 	if job == nil || job.Spec.XGBReplicaSpecs == nil {
 		return ""
@@ -265,8 +291,9 @@ func ExtractXGBoostImageFromJob(job *kubeflowv1.XGBoostJob) string {
 	return ""
 }
 
-// ExtractPaddleImageFromJob extracts the container image from a PaddleJob
-// by checking the Master replica.
+// ExtractPaddleImageFromJob extracts the container image from a PaddleJob.
+// It retrieves the image from the Master replica which coordinates
+// the PaddlePaddle distributed training.
 func ExtractPaddleImageFromJob(job *kubeflowv1.PaddleJob) string {
 	if job == nil || job.Spec.PaddleReplicaSpecs == nil {
 		return ""
@@ -280,8 +307,9 @@ func ExtractPaddleImageFromJob(job *kubeflowv1.PaddleJob) string {
 	return ""
 }
 
-// ExtractJAXImageFromJob extracts the container image from a JAXJob
-// by checking the Worker replica.
+// ExtractJAXImageFromJob extracts the container image from a JAXJob.
+// It retrieves the image from the Worker replica since JAX jobs
+// typically use a symmetric worker configuration.
 func ExtractJAXImageFromJob(job *kubeflowv1.JAXJob) string {
 	if job == nil || job.Spec.JAXReplicaSpecs == nil {
 		return ""

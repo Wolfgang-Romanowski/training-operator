@@ -25,7 +25,7 @@ spec:
     # Business Question: Can we deprecate PyTorch 2.4 or TensorFlow 2.14?
     - record: openshift:training_version_deprecation_analysis
       expr: |
-        training_operator_image_version_usage{version=~"pytorch-2.[34]|tensorflow-2.1[45]"}
+        sum by (version) (training_operator_image_version_usage{version=~"pytorch-2.3|pytorch-2.4|tensorflow-2.14|tensorflow-2.15"})
     
     # METRIC 2: RHOAI Adoption Rate
     # Business Question: What % of jobs use RHOAI official images?

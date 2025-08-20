@@ -1,6 +1,16 @@
-// pkg/telemetry/customer_analysis.go
-// Customer differentiation logic to distinguish real customers from test/demo usage
-// Addresses requirement: "Include metadata to differentiate real customers from other usage sources"
+// Copyright 2025 The Kubeflow Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package telemetry
 
@@ -10,15 +20,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// CustomerInfo represents customer classification data
+// CustomerInfo represents customer classification data for telemetry analysis.
+// It captures metadata to differentiate real customers from test/demo usage
+// without collecting any personally identifiable information.
 type CustomerInfo struct {
 	CustomerType     string   // enterprise, development, demo, test
 	UsageSource      string   // rhoai-ui, cli, api-direct, external-tool
 	NamespacePattern string   // production, development, demo, test
-	TenantHints      []string // organization indicators
+	TenantHints      []string // organization indicators (deprecated for privacy)
 }
 
-// ResourceInfo represents resource utilization analysis
+// ResourceInfo represents resource utilization analysis for capacity planning.
+// It categorizes resource usage patterns to understand workload characteristics
+// and infrastructure requirements.
 type ResourceInfo struct {
 	CPUCategory    string // small, medium, large, xlarge
 	MemoryCategory string // small, medium, large, xlarge
@@ -26,9 +40,10 @@ type ResourceInfo struct {
 	StorageType    string // local, network, distributed
 }
 
-// classifyCustomerUsage analyzes job metadata to classify customer type (Red Hat compliant)
-// PRIVACY COMPLIANT: No PII collection, binary enterprise/non-enterprise classification only
-func classifyCustomerUsage(namespace string, job interface{}) *CustomerInfo {
+// ClassifyCustomerUsage analyzes job metadata to classify customer type.
+// This function is privacy-compliant, collecting no personally identifiable information
+// and providing only binary enterprise/non-enterprise classification per Red Hat requirements.
+func ClassifyCustomerUsage(namespace string, job interface{}) *CustomerInfo {
 	customerInfo := &CustomerInfo{
 		CustomerType:     "non-enterprise", // Default to non-enterprise for privacy
 		UsageSource:      "unknown",
@@ -45,13 +60,15 @@ func classifyCustomerUsage(namespace string, job interface{}) *CustomerInfo {
 		labels = metaAccessor.GetLabels()
 	}
 
-	// Simple binary classification: enterprise vs non-enterprise (Red Hat compliant)
+	// Perform binary classification: enterprise vs non-enterprise for privacy compliance
 	customerInfo.CustomerType = determineSimpleCustomerType(namespace, annotations, labels)
 
 	return customerInfo
 }
 
-// classifyNamespacePattern analyzes namespace naming patterns to identify environment type
+// classifyNamespacePattern analyzes namespace naming patterns to identify environment type.
+// It uses common naming conventions to infer whether the namespace represents
+// production, development, demo, or test environments.
 func classifyNamespacePattern(namespace string) string {
 	namespaceLower := strings.ToLower(namespace)
 
@@ -75,28 +92,28 @@ func classifyNamespacePattern(namespace string) string {
 		"trial", "evaluation", "eval",
 	}
 
-	// Check for production patterns first (highest confidence)
+	// Production patterns have highest priority for accurate classification
 	for _, pattern := range productionPatterns {
 		if strings.Contains(namespaceLower, pattern) {
 			return "production"
 		}
 	}
 
-	// Check for demo patterns (clear test usage)
+	// Demo patterns indicate non-production test or evaluation usage
 	for _, pattern := range demoPatterns {
 		if strings.Contains(namespaceLower, pattern) {
 			return "demo"
 		}
 	}
 
-	// Check for development patterns
+	// Development patterns suggest pre-production environments
 	for _, pattern := range developmentPatterns {
 		if strings.Contains(namespaceLower, pattern) {
 			return "development"
 		}
 	}
 
-	// Default based on common enterprise naming patterns
+	// Complex namespace names often indicate enterprise usage patterns
 	if len(namespace) > 20 || strings.Contains(namespace, "-") {
 		return "enterprise" // Complex namespace names suggest enterprise usage
 	}
@@ -104,10 +121,11 @@ func classifyNamespacePattern(namespace string) string {
 	return "unknown"
 }
 
-// determineSimpleCustomerType provides binary enterprise/non-enterprise classification
-// RED HAT PRIVACY COMPLIANT: No PII collection, no detailed customer identification
+// determineSimpleCustomerType provides binary enterprise/non-enterprise classification.
+// This function is Red Hat privacy-compliant, avoiding collection of personally
+// identifiable information or detailed customer identification.
 func determineSimpleCustomerType(namespace string, annotations, labels map[string]string) string {
-	// Check for clear enterprise indicators (RHOAI UI usage, production patterns)
+	// Enterprise indicators include RHOAI UI usage and production patterns
 	if annotations != nil {
 		// RHOAI UI created jobs indicate enterprise usage
 		if source, exists := annotations["rhods.openshiftai.io/source"]; exists {
@@ -131,7 +149,7 @@ func determineSimpleCustomerType(namespace string, annotations, labels map[strin
 		}
 	}
 
-	// Simple namespace-based classification (no detailed pattern analysis)
+	// Namespace-based classification provides additional signal
 	namespaceLower := strings.ToLower(namespace)
 
 	// Production patterns suggest enterprise usage
@@ -139,11 +157,13 @@ func determineSimpleCustomerType(namespace string, annotations, labels map[strin
 		return "enterprise"
 	}
 
-	// Default to non-enterprise for privacy (includes dev, test, demo, unknown)
+	// Conservative default to non-enterprise ensures privacy compliance
 	return "non-enterprise"
 }
 
-// identifyUsageSource determines how the training job was created
+// identifyUsageSource determines how the training job was created.
+// This helps understand user interaction patterns and tooling preferences
+// for product improvement insights.
 func identifyUsageSource(annotations, labels map[string]string) string {
 	if annotations != nil {
 		// RHOAI UI/Dashboard source
@@ -197,15 +217,17 @@ func identifyUsageSource(annotations, labels map[string]string) string {
 	return "api-direct" // Direct API usage (programmatic)
 }
 
-// extractTenantHints is deprecated and returns empty hints for privacy compliance
-// RED HAT PRIVACY COMPLIANT: No collection of organization/tenant identifying information
+// extractTenantHints is deprecated and returns empty hints for privacy compliance.
+// This function maintains interface compatibility while ensuring no collection
+// of organization or tenant identifying information per Red Hat privacy requirements.
 func extractTenantHints(namespace string, annotations, labels map[string]string) []string {
-	// Return empty hints to prevent PII collection (email addresses, org names, etc.)
-	// This maintains interface compatibility while ensuring privacy compliance
+	// Always return empty slice to prevent any PII collection
 	return []string{}
 }
 
-// analyzeJobResources analyzes job resource requirements for capacity planning
+// analyzeJobResources analyzes job resource requirements for capacity planning.
+// It categorizes resource usage to understand infrastructure requirements and
+// workload patterns across the cluster.
 func analyzeJobResources(job interface{}) *ResourceInfo {
 	resourceInfo := &ResourceInfo{
 		CPUCategory:    "unknown",
@@ -214,8 +236,8 @@ func analyzeJobResources(job interface{}) *ResourceInfo {
 		StorageType:    "unknown",
 	}
 
-	// This would need to be implemented based on specific job types
-	// For now, provide a basic implementation that can be extended
+	// Resource analysis implementation would extract actual resource requests/limits
+	// from job specifications based on the specific job type
 
 	// TODO: Implement resource analysis based on job specifications
 	// This would analyze:
@@ -224,7 +246,7 @@ func analyzeJobResources(job interface{}) *ResourceInfo {
 	// - GPU requests from resource requirements
 	// - Storage volume configurations
 
-	// Placeholder implementation - should be extended based on actual job specs
+	// Default categorization until actual resource extraction is implemented
 	resourceInfo.CPUCategory = "medium"    // Default assumption
 	resourceInfo.MemoryCategory = "medium" // Default assumption
 	resourceInfo.GPUCategory = "none"      // Conservative default

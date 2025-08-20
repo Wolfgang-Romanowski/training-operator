@@ -1,0 +1,38 @@
+# manifests/base/monitoring/otel-collector-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: training-operator-otel-collector
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: telemetry-gateway
+    app.kubernetes.io/part-of: training-operator
+    monitoring.opendatahub.io/scrape: "true"
+spec:
+  type: ClusterIP
+  ports:
+  # Prometheus exporter endpoint
+  - name: prometheus
+    port: 8889
+    targetPort: 8889
+    protocol: TCP
+  # OTLP gRPC receiver
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  # OTLP HTTP receiver
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+  # Health check
+  - name: health
+    port: 13133
+    targetPort: 13133
+    protocol: TCP
+  selector:
+    app.kubernetes.io/component: opentelemetry-collector
+    app.kubernetes.io/instance: training-operator-gateway
+    app.kubernetes.io/managed-by: opentelemetry-operator

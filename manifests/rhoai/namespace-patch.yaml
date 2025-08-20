@@ -5,3 +5,5 @@ metadata:
   labels:
     openshift.io/cluster-monitoring: "true"
     kubernetes.io/metadata.name: opendatahub
+    opendatahub.io/namespace: "true"
+    app.kubernetes.io/part-of: opendatahub

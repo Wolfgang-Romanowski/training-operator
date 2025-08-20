@@ -1,23 +1,32 @@
+# manifests/base/monitoring/servicemonitor.yaml
+# UPDATED: Now scrapes otel-collector as required by RHOAISTRAT-575
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: training-operator-metrics
+  name: training-operator-otel-metrics
   namespace: opendatahub
   labels:
-    monitoring.opendatahub.io/scrape: "true"  # CRITICAL: Required by RHOAISTRAT-575
     app.kubernetes.io/name: training-operator
-    app.kubernetes.io/component: metrics
-    app.kubernetes.io/part-of: training-operator
+    app.kubernetes.io/component: telemetry
+    monitoring.opendatahub.io/scrape: "true"
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: training-operator
-      app.kubernetes.io/component: metrics
+      app.kubernetes.io/name: otel-collector
+      app.kubernetes.io/component: telemetry-gateway
   endpoints:
-  - port: metrics
+  - port: prometheus
     scheme: http
     path: /metrics
     interval: 30s
-    relabelings:
-    - action: labeldrop
-      regex: pod|instance|job|endpoint|service|container
+    scrapeTimeout: 10s
+    honorLabels: true  # Important: respect labels from otel-collector
+    metricRelabelings:
+    # Only keep training_ metrics and recording rules
+    - sourceLabels: [__name__]
+      regex: '^(training_.*|openshift:training_.*)'
+      action: keep
+    # Drop any _bucket metrics to reduce cardinality
+    - sourceLabels: [__name__]
+      regex: '.*_bucket'
+      action: drop

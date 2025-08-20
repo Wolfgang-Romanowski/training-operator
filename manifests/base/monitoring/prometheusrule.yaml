@@ -1,75 +1,63 @@
+# manifests/base/monitoring/prometheusrule.yaml
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: training-operator-recording-rules
-  namespace: opendatahub
+  namespace: openshift-monitoring  # MUST be in openshift-monitoring
   labels:
     monitoring.opendatahub.io/scrape: "true"
     prometheus: kube-prometheus
     app.kubernetes.io/name: training-operator
-    app.kubernetes.io/part-of: training-operator
 spec:
   groups:
   - name: training_operator.telemetry
     interval: 30s
     rules:
     # =========================================================
-    # PHASE 1 RECORDING RULES - Max 10 timeseries for Telemetry
-    # Per Red Hat Monitoring Handbook requirements
+    # TELEMETRY RECORDING RULES - LIMITED TO 3 METRICS
+    # Compliant with Red Hat Monitoring Handbook
     # =========================================================
     
-    # RULE 1: RHOAI adoption percentage - 1 timeseries
+    # METRIC 1: RHOAI Runtime Adoption Rate
+    # Business Question: What percentage of training jobs use RHOAI images?
+    # Cardinality: 1 timeseries
     # owners: (@opendatahub/training-operator-team)
-    # consumed-by: Telemetry, Product Management
+    # consumed-by: Product Management, Executive Dashboard
     - record: openshift:training_rhoai_adoption_percentage
       expr: |
-        (
-          sum(training_jobs_by_image_source_total{image_source="rhoai_official"})
-          /
-          sum(training_jobs_by_image_source_total)
-        ) * 100 or on() vector(0)
+        sum without(instance, pod, endpoint, service, container, framework, version) (
+          (
+            sum(training_jobs_by_image_source_total{image_source="rhoai_official"})
+            /
+            (sum(training_jobs_by_image_source_total) > 0)
+          ) * 100
+        ) or vector(0)
     
-    # RULE 2: Job success rate - 1 timeseries
+    # METRIC 2: Job Success Rate
+    # Business Question: What percentage of jobs complete successfully?
+    # Cardinality: 1 timeseries
     # owners: (@opendatahub/training-operator-team)
-    # consumed-by: SRE, Telemetry
+    # consumed-by: SRE, Platform Team
     - record: openshift:training_job_success_rate
       expr: |
-        (
-          sum(training_jobs_completed_total{status="succeeded"})
-          /
-          sum(training_jobs_completed_total)
-        ) * 100 or on() vector(100)
+        sum without(instance, pod, endpoint, service, container, framework, status) (
+          (
+            sum(training_jobs_completed_total{status="succeeded"})
+            /
+            (sum(training_jobs_completed_total) > 0)
+          ) * 100
+        ) or vector(100)
     
-    # RULE 3: GPU hours consumed - 1 timeseries
+    # METRIC 3: Active Training Workloads
+    # Business Question: How many training workloads are currently running?
+    # Cardinality: 1 timeseries
     # owners: (@opendatahub/training-operator-team)
-    # consumed-by: Finance, Product Management
-    - record: openshift:training_gpu_hours_daily
+    # consumed-by: Capacity Planning, Executive Dashboard
+    - record: openshift:training_active_jobs_total
       expr: |
-        sum(
-          increase(training_accelerator_hours_consumed_total[24h])
-        ) or on() vector(0)
-    
-    # RULE 4: Framework distribution - ~6 timeseries
-    # owners: (@opendatahub/training-operator-team)
-    # consumed-by: Product Management
-    - record: openshift:training_framework_usage_total
-      expr: |
-        sum by (framework) (
-          training_jobs_created_total
-        )
-    
-    # RULE 5: Kueue adoption rate - 1 timeseries (REQUIRED)
-    # owners: (@opendatahub/training-operator-team)
-    # consumed-by: Platform Team
-    - record: openshift:training_kueue_adoption_rate
-      expr: |
-        (
-          sum(training_kueue_managed_jobs_total)
-          /
-          sum(training_jobs_created_total)
-        ) * 100 or on() vector(0)
-    
-    # Total Phase 1: ~10 timeseries (at limit)
+        sum without(instance, pod, endpoint, service, container, framework) (
+          sum(training_jobs_active_total)
+        ) or vector(0)
 
   - name: training_operator.alerts
     interval: 30s
@@ -79,20 +67,19 @@ spec:
         openshift:training_job_success_rate < 90
       for: 15m
       labels:
-        severity: critical
-        team: opendatahub
+        severity: warning
+        component: training-operator
       annotations:
         summary: "Training job success rate below 90%"
-        description: "Success rate is {{ $value }}%"
-        runbook_url: "https://gitlab.cee.redhat.com/opendatahub/runbooks/-/blob/main/training-operator/high-failure-rate.md"
-    
-    - alert: TrainingOperatorHighGPUUsage
+        description: "Training job success rate is {{ $value }}%"
+        
+    - alert: TrainingOperatorLowAdoption
       expr: |
-        openshift:training_gpu_hours_daily > 1000
-      for: 30m
+        openshift:training_rhoai_adoption_percentage < 30
+      for: 1h
       labels:
-        severity: warning
-        team: opendatahub
+        severity: info
+        component: training-operator
       annotations:
-        summary: "High GPU usage detected"
-        description: "Daily GPU hours: {{ $value }}"
+        summary: "Low RHOAI runtime adoption"
+        description: "Only {{ $value }}% of jobs use RHOAI images"

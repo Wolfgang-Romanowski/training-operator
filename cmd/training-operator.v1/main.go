@@ -141,6 +141,12 @@ func main() {
 		os.Setenv("TELEMETRY_ENABLED", "false")
 	}
 
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: metricsAddr,
+		},
+
 	var cacheOpts cache.Options
 	if namespace != "" {
 		cacheOpts = cache.Options{
@@ -196,6 +202,8 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+
 
 func setupControllers(mgr ctrl.Manager, enabledSchemes controllerv1.EnabledSchemes, gangSchedulerName string, controllerThreads int, certsReady <-chan struct{}) {
 	setupLog.Info("Waiting for certificate generation to complete")

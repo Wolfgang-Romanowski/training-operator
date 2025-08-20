@@ -1,3 +1,4 @@
+// pkg/telemetry/metrics/metric_definitions.go
 package metrics
 
 import (
@@ -10,123 +11,66 @@ import (
 
 var (
 	// =================================================================
-	// PRIMARY BUSINESS METRICS - RHOAI Runtime Adoption
+	// PRIMARY METRICS FOR TELEMETRY - LIMITED FOR CARDINALITY
 	// =================================================================
 
+	// RHOAI Adoption Tracking (PRIMARY BUSINESS METRIC)
 	TrainingJobsByImageSource = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_jobs_by_image_source_total",
-			Help: "Total training jobs created by image source (rhoai_official/community/custom)",
+			Help: "Total training jobs by image source (rhoai_official/community/custom)",
 		},
-		[]string{"framework", "image_source", "rhoai_version"},
+		[]string{"image_source"}, // Only 3 possible values
 	)
 
-	ActiveRHOAIVersionDistribution = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "training_jobs_active_rhoai_versions",
-			Help: "Currently active training jobs by RHOAI version (2.3/2.4/2.5)",
-		},
-		[]string{"framework", "rhoai_version"},
-	)
-
-	RHOAIVersionMigration = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_jobs_version_migration_total",
-			Help: "Version migration patterns (e.g., 2.4->2.5)",
-		},
-		[]string{"framework", "from_version", "to_version"},
-	)
-
-	// =================================================================
-	// GPU/ACCELERATOR METRICS - REQUIRED by RHOAISTRAT-575 page 8
-	// =================================================================
-
-	AcceleratorHoursConsumed = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_accelerator_hours_consumed_total",
-			Help: "Total accelerator hours consumed by training jobs normalized per OBSDA-1087",
-		},
-		[]string{"framework", "accelerator_type", "image_source"},
-	)
-
-	AcceleratorUtilization = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "training_accelerator_active_count",
-			Help: "Current accelerators in use by training jobs",
-		},
-		[]string{"framework", "accelerator_type"},
-	)
-
-	// =================================================================
-	// KUEUE INTEGRATION METRICS - REQUIRED by RHOAISTRAT-575 page 8
-	// =================================================================
-
-	KueueManagedJobs = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_kueue_managed_jobs_total",
-			Help: "Jobs managed through Kueue workload manager",
-		},
-		[]string{"framework", "queue_name", "image_source"},
-	)
-
-	KueueQueueDepth = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "training_kueue_queue_depth",
-			Help: "Current depth of Kueue queues for training jobs",
-		},
-		[]string{"queue_name"},
-	)
-
-	// =================================================================
-	// JOB LIFECYCLE METRICS - For SLO Monitoring
-	// =================================================================
-
-	JobQueueDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "training_job_queue_duration_seconds",
-			Help:    "Time from job creation to first pod scheduling",
-			Buckets: prometheus.ExponentialBuckets(10, 2, 10), // 10s to 5120s
-		},
-		[]string{"framework", "image_source"},
-	)
-
-	JobRunDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "training_job_run_duration_seconds",
-			Help:    "Time from job start to completion",
-			Buckets: prometheus.ExponentialBuckets(60, 2, 12), // 1min to 68hours
-		},
-		[]string{"framework", "image_source", "status"},
-	)
-
-	JobFailureReasons = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_job_failure_reasons_total",
-			Help: "Job failures categorized by reason",
-		},
-		[]string{"framework", "reason", "image_source"},
-	)
-
-	// =================================================================
-	// COMPLIANCE METRICS - Required by RHOAISTRAT-575
-	// =================================================================
-
-	TrainingJobsTotal = prometheus.NewCounterVec(
+	// Job Lifecycle Metrics
+	TrainingJobsCreated = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_jobs_created_total",
 			Help: "Total training jobs created",
 		},
-		[]string{"framework"},
+		[]string{"framework"}, // Limited to ~6 frameworks
 	)
 
 	TrainingJobsCompleted = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_jobs_completed_total",
-			Help: "Total training jobs completed by status",
+			Help: "Total training jobs completed",
 		},
-		[]string{"framework", "status"},
+		[]string{"status"}, // Only succeeded/failed
 	)
 
+	TrainingJobsActive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "training_jobs_active_total",
+			Help: "Currently active training jobs",
+		},
+		[]string{"framework"},
+	)
+
+	// =================================================================
+	// INTERNAL METRICS - NOT EXPORTED TO TELEMETRY
+	// =================================================================
+
+	// Version tracking for internal use only
+	internalVersionDistribution = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "training_internal_version_distribution",
+			Help: "Internal metric for version distribution analysis",
+		},
+		[]string{"framework", "version"},
+	)
+
+	// Detailed failure tracking for debugging
+	internalFailureReasons = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "training_internal_failure_reasons",
+			Help: "Internal metric for failure analysis",
+		},
+		[]string{"framework", "reason"},
+	)
+
+	// Controller health metrics
 	ReconcileErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_operator_reconcile_errors_total",
@@ -135,57 +79,157 @@ var (
 		[]string{"controller"},
 	)
 
+	ReconcileDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "training_operator_reconcile_duration_seconds",
+			Help:    "Reconciliation duration",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"controller"},
+	)
+
 	// =================================================================
-	// INTERNAL TRACKING - Not exported to Telemetry
+	// INTERNAL STATE TRACKING
 	// =================================================================
 
-	jobStartTimes = make(map[string]time.Time)
-	jobMutex      sync.RWMutex
+	jobTracker = &JobTracker{
+		startTimes: make(map[string]time.Time),
+		versions:   make(map[string]string),
+		maxAge:     24 * time.Hour,
+		maxEntries: 10000,
+	}
+
+	initOnce sync.Once
 )
 
-func InitMetrics() {
-	metrics.Registry.MustRegister(
-		// Business metrics - RHOAI adoption
-		TrainingJobsByImageSource,
-		ActiveRHOAIVersionDistribution,
-		RHOAIVersionMigration,
-
-		// GPU/Accelerator metrics - REQUIRED
-		AcceleratorHoursConsumed,
-		AcceleratorUtilization,
-
-		// Kueue metrics - REQUIRED
-		KueueManagedJobs,
-		KueueQueueDepth,
-
-		// Job lifecycle metrics
-		JobQueueDuration,
-		JobRunDuration,
-		JobFailureReasons,
-
-		// Compliance metrics
-		TrainingJobsTotal,
-		TrainingJobsCompleted,
-		ReconcileErrors,
-	)
+// JobTracker provides thread-safe tracking with automatic cleanup
+type JobTracker struct {
+	mu         sync.RWMutex
+	startTimes map[string]time.Time
+	versions   map[string]string
+	maxAge     time.Duration
+	maxEntries int
 }
 
-// Helper functions for tracking
+// InitMetrics registers all metrics with the controller-runtime registry
+func InitMetrics() {
+	initOnce.Do(func() {
+		// Register only the metrics that will be exported via telemetry
+		metrics.Registry.MustRegister(
+			// Primary telemetry metrics (low cardinality)
+			TrainingJobsByImageSource,
+			TrainingJobsCreated,
+			TrainingJobsCompleted,
+			TrainingJobsActive,
+			
+			// Controller health metrics
+			ReconcileErrors,
+			ReconcileDuration,
+		)
+
+		// Start cleanup routine for memory management
+		go jobTracker.cleanupRoutine()
+	})
+}
+
+// EnsureInitialized ensures metrics are initialized (idempotent)
+func EnsureInitialized() {
+	InitMetrics()
+}
+
+// Thread-safe job tracking methods
+func (jt *JobTracker) SetStartTime(key string, t time.Time) {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+
+	// Prevent unbounded growth
+	if len(jt.startTimes) >= jt.maxEntries {
+		jt.removeOldestLocked()
+	}
+
+	jt.startTimes[key] = t
+}
+
+func (jt *JobTracker) GetStartTime(key string) (time.Time, bool) {
+	jt.mu.RLock()
+	defer jt.mu.RUnlock()
+
+	t, exists := jt.startTimes[key]
+	return t, exists
+}
+
+func (jt *JobTracker) Delete(key string) {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+
+	delete(jt.startTimes, key)
+	delete(jt.versions, key)
+}
+
+func (jt *JobTracker) SetVersion(key, version string) {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+
+	jt.versions[key] = version
+}
+
+func (jt *JobTracker) GetVersion(key string) (string, bool) {
+	jt.mu.RLock()
+	defer jt.mu.RUnlock()
+
+	v, exists := jt.versions[key]
+	return v, exists
+}
+
+// Automatic cleanup routine
+func (jt *JobTracker) cleanupRoutine() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		jt.cleanup()
+	}
+}
+
+func (jt *JobTracker) cleanup() {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+
+	now := time.Now()
+	for key, startTime := range jt.startTimes {
+		if now.Sub(startTime) > jt.maxAge {
+			delete(jt.startTimes, key)
+			delete(jt.versions, key)
+		}
+	}
+}
+
+func (jt *JobTracker) removeOldestLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+
+	for key, t := range jt.startTimes {
+		if oldestKey == "" || t.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = t
+		}
+	}
+
+	if oldestKey != "" {
+		delete(jt.startTimes, oldestKey)
+		delete(jt.versions, oldestKey)
+	}
+}
+
+// Helper functions for metric updates
 func RecordJobStart(jobKey string) {
-	jobMutex.Lock()
-	defer jobMutex.Unlock()
-	jobStartTimes[jobKey] = time.Now()
+	jobTracker.SetStartTime(jobKey, time.Now())
 }
 
 func GetJobStartTime(jobKey string) (time.Time, bool) {
-	jobMutex.RLock()
-	defer jobMutex.RUnlock()
-	startTime, exists := jobStartTimes[jobKey]
-	return startTime, exists
+	return jobTracker.GetStartTime(jobKey)
 }
 
-func RemoveJobStartTime(jobKey string) {
-	jobMutex.Lock()
-	defer jobMutex.Unlock()
-	delete(jobStartTimes, jobKey)
+func RemoveJobTracking(jobKey string) {
+	jobTracker.Delete(jobKey)
 }

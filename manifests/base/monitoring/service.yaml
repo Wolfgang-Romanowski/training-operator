@@ -1,18 +1,20 @@
+# manifests/base/monitoring/service.yaml
 apiVersion: v1
 kind: Service
 metadata:
-  name: training-operator-controller-manager
+  name: training-operator-metrics
   namespace: opendatahub
   labels:
-    app.kubernetes.io/name: training-operator-controller-manager
+    app.kubernetes.io/name: training-operator
     app.kubernetes.io/component: metrics
     app.kubernetes.io/part-of: training-operator
+    monitoring.opendatahub.io/scrape: "true"
 spec:
+  type: ClusterIP
   ports:
-  - name: http
+  - name: metrics
     port: 8080
     targetPort: 8080
     protocol: TCP
   selector:
     control-plane: controller-manager
-    app.kubernetes.io/name: training-operator

@@ -1,3 +1,4 @@
+# manifests/base/monitoring/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -6,7 +7,7 @@ metadata:
   labels:
     app.kubernetes.io/name: training-operator
     app.kubernetes.io/component: metrics
-    monitoring.opendatahub.io/scrape: "true"  # REQUIRED
+    monitoring.opendatahub.io/scrape: "true"
 spec:
   podSelector:
     matchLabels:
@@ -14,6 +15,7 @@ spec:
   policyTypes:
   - Ingress
   ingress:
+  # Allow scraping from redhat-ods-monitoring namespace (REQUIRED by RHOAISTRAT-575)
   - from:
     - namespaceSelector:
         matchLabels:
@@ -21,6 +23,7 @@ spec:
     ports:
     - protocol: TCP
       port: 8080
+  # Allow from openshift-monitoring for recording rules
   - from:
     - namespaceSelector:
         matchLabels:
@@ -28,6 +31,7 @@ spec:
     ports:
     - protocol: TCP
       port: 8080
+  # Allow from openshift-user-workload-monitoring (migration period)
   - from:
     - namespaceSelector:
         matchLabels:

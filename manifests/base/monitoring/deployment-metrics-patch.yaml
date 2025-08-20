@@ -1,0 +1,21 @@
+# manifests/base/monitoring/deployment-metrics-patch.yaml
+# Patch to add annotations for otel-collector scraping
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: training-operator
+spec:
+  template:
+    metadata:
+      annotations:
+        # Enable otel-collector scraping
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: manager
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP

@@ -1,0 +1,200 @@
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: training-operator-gateway
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: telemetry-gateway
+    app.kubernetes.io/part-of: training-operator
+    monitoring.opendatahub.io/scrape: "true"
+spec:
+  mode: deployment
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 256Mi
+
+  serviceAccount: training-operator-otel-collector
+
+  config: |
+    receivers:
+      # Scrape metrics from training-operator pods
+      prometheus:
+        config:
+          scrape_configs:
+          - job_name: 'training-operator'
+            scrape_interval: 30s
+            kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names:
+                - opendatahub
+            relabel_configs:
+            # Only scrape pods with our label
+            - source_labels: [__meta_kubernetes_pod_label_control_plane]
+              action: keep
+              regex: controller-manager
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+              action: keep
+              regex: true
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+              action: replace
+              target_label: __metrics_path__
+              regex: (.+)
+            - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+              action: replace
+              regex: ([^:]+)(?::\d+)?;(\d+)
+              replacement: $1:$2
+              target_label: __address__
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - source_labels: [__meta_kubernetes_namespace]
+              action: replace
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              action: replace
+              target_label: pod
+            # Drop high-cardinality labels per Red Hat Handbook
+            - action: labeldrop
+              regex: 'pod|instance|endpoint|container'
+      
+      # Receive OTLP data (for future traces/logs)
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # Add Kubernetes metadata
+      k8sattributes:
+        auth_type: "serviceAccount"
+        passthrough: false
+        extract:
+          metadata:
+          - k8s.namespace.name
+          - k8s.deployment.name
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.node.name
+        pod_association:
+        - sources:
+          - from: resource_attribute
+            name: k8s.pod.ip
+        - sources:
+          - from: resource_attribute
+            name: k8s.pod.uid
+      
+      # Memory limiter to prevent OOM
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      
+      # Batch processing for efficiency
+      batch:
+        send_batch_size: 10000
+        timeout: 10s
+      
+      # Filter to only keep training_ metrics
+      filter/metrics:
+        metrics:
+          include:
+            match_type: regexp
+            metric_names:
+            - "^training_.*"
+            - "^openshift:training_.*"
+      
+      # Transform for cardinality reduction
+      transform:
+        metric_statements:
+        - context: metric
+          statements:
+          # Remove any remaining high-cardinality labels
+          - delete_label_values(pod)
+          - delete_label_values(instance)
+          - delete_label_values(job) where job != "training-operator"
+      
+      # Resource detection for cloud metadata
+      resourcedetection:
+        detectors: [openshift, env, system]
+        override: false
+
+    exporters:
+      # Prometheus exporter for local Prometheus to scrape
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        namespace: ""  # Don't add namespace prefix
+        const_labels:
+          collector: "training-operator"
+        resource_to_telemetry_conversion:
+          enabled: true
+      
+      # Prometheus Remote Write for Observatorium (Telemetry)
+      prometheusremotewrite/telemetry:
+        endpoint: "${TELEMETRY_ENDPOINT}"  # Set via environment variable
+        headers:
+          X-Tenant-Id: "openshift-ai"
+        auth:
+          authenticator: bearertokenauth
+        resource_to_telemetry_conversion:
+          enabled: true
+        external_labels:
+          cluster_id: "${CLUSTER_ID}"
+          _origin: "training-operator"
+      
+      # Debug logging (disable in production)
+      logging:
+        loglevel: info
+        
+      # OTLP export for future 3rd party integrations
+      otlp/customer:
+        endpoint: "${CUSTOMER_OTLP_ENDPOINT}"  # Optional customer endpoint
+        headers:
+          api-key: "${CUSTOMER_API_KEY}"
+        tls:
+          insecure: false
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 300s
+
+    extensions:
+      # Health check endpoint
+      health_check:
+        endpoint: 0.0.0.0:13133
+      
+      # Performance profiling (disable in production)
+      pprof:
+        endpoint: 0.0.0.0:1777
+      
+      # zPages for debugging
+      zpages:
+        endpoint: 0.0.0.0:55679
+      
+      # Bearer token auth for Observatorium
+      bearertokenauth:
+        token: "${TELEMETRY_TOKEN}"
+
+    service:
+      extensions: [health_check, pprof, zpages, bearertokenauth]
+      pipelines:
+        # Metrics pipeline
+        metrics:
+          receivers: [prometheus]
+          processors: [memory_limiter, k8sattributes, filter/metrics, transform, batch, resourcedetection]
+          exporters: [prometheus, prometheusremotewrite/telemetry, logging]
+        
+        # Traces pipeline (for future use)
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [logging]

@@ -1,0 +1,55 @@
+# manifests/base/monitoring/otel-collector-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: training-operator-otel-collector
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: training-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: training-operator-otel-collector
+rules:
+# For Kubernetes service discovery
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - nodes/metrics
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+  verbs: ["get"]
+# For OpenShift metadata
+- apiGroups: ["config.openshift.io"]
+  resources:
+  - clusterversions
+  - infrastructures
+  verbs: ["get", "list"]
+# For writing traces to Tempo (future)
+- apiGroups: ["tempo.grafana.com"]
+  resources:
+  - tempostacks
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: training-operator-otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: training-operator-otel-collector
+subjects:
+- kind: ServiceAccount
+  name: training-operator-otel-collector
+  namespace: opendatahub

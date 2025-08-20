@@ -1,20 +1,20 @@
 package metrics
 
 import (
-    "sync"
+	"sync"
 )
 
 var (
-    initialized bool
-    initMutex   sync.Mutex
+	initialized bool
+	initMutex   sync.Mutex
 )
 
 func EnsureInitialized() {
-    initMutex.Lock()
-    defer initMutex.Unlock()
-    
-    if !initialized {
-        InitMetrics()
-        initialized = true
-    }
+	initMutex.Lock()
+	defer initMutex.Unlock()
+
+	if !initialized {
+		InitMetrics()
+		initialized = true
+	}
 }

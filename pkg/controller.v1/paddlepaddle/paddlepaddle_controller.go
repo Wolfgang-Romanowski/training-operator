@@ -26,6 +26,7 @@ import (
 	"github.com/kubeflow/training-operator/pkg/controller.v1/common"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/control"
 	"github.com/kubeflow/training-operator/pkg/controller.v1/expectation"
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 	commonutil "github.com/kubeflow/training-operator/pkg/util"
 
 	"github.com/go-logr/logr"
@@ -327,6 +328,7 @@ func (r *PaddleJobReconciler) DeleteJob(job interface{}) error {
 	r.recorder.Eventf(paddlejob, corev1.EventTypeNormal, control.SuccessfulDeletePodReason, "Deleted job: %v", paddlejob.Name)
 	logrus.Info("job deleted", "namespace", paddlejob.Namespace, "name", paddlejob.Name)
 	trainingoperatorcommon.DeletedJobsCounterInc(paddlejob.Namespace, r.GetFrameworkName())
+	telemetry.ReportJobDeletion(paddlejob, "paddle")
 	return nil
 }
 
@@ -399,6 +401,7 @@ func (r *PaddleJobReconciler) UpdateJobStatus(job interface{},
 					}
 					commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PaddleJobKind, commonutil.JobSucceededReason), msg)
 					trainingoperatorcommon.SuccessfulJobsCounterInc(paddlejob.Namespace, r.GetFrameworkName())
+					telemetry.ReportJobCompletion(paddlejob, "paddle", true)
 					return nil
 				}
 			}
@@ -415,11 +418,13 @@ func (r *PaddleJobReconciler) UpdateJobStatus(job interface{},
 					}
 					commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobSucceeded, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PaddleJobKind, commonutil.JobSucceededReason), msg)
 					trainingoperatorcommon.SuccessfulJobsCounterInc(paddlejob.Namespace, r.GetFrameworkName())
+					telemetry.ReportJobCompletion(paddlejob, "paddle", true)
 				} else if running > 0 {
 					// Some workers are still running, leave a running condition.
 					msg := fmt.Sprintf("PaddleJob %s/%s is running.",
 						paddlejob.Namespace, paddlejob.Name)
 					commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobRunning, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PaddleJobKind, commonutil.JobRunningReason), msg)
+					telemetry.ReportJobStarted(paddlejob, "paddle")
 				}
 			}
 		}
@@ -439,6 +444,7 @@ func (r *PaddleJobReconciler) UpdateJobStatus(job interface{},
 				}
 				commonutil.UpdateJobConditions(jobStatus, kubeflowv1.JobFailed, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PaddleJobKind, commonutil.JobFailedReason), msg)
 				trainingoperatorcommon.FailedJobsCounterInc(paddlejob.Namespace, r.GetFrameworkName())
+				telemetry.ReportJobFailure(paddlejob, "paddle", msg)
 			}
 		}
 	}
@@ -516,6 +522,7 @@ func (r *PaddleJobReconciler) onOwnerCreateFunc() func(createEvent event.TypedCr
 		logrus.Info(msg)
 		trainingoperatorcommon.CreatedJobsCounterInc(paddlejob.Namespace, r.GetFrameworkName())
 		commonutil.UpdateJobConditions(&paddlejob.Status, kubeflowv1.JobCreated, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.PaddleJobKind, commonutil.JobCreatedReason), msg)
+		telemetry.ReportJobCreation(paddlejob, "paddle")
 		return true
 	}
 }

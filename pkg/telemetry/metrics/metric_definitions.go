@@ -11,42 +11,12 @@ import (
 
 var (
 	// =================================================================
-	// PRIMARY METRICS FOR TELEMETRY - LIMITED FOR CARDINALITY
+	// RED HAT COMPLIANT TELEMETRY METRICS - 3 METRICS MAXIMUM
+	// Fully compliant with RHOAISTRAT-575 cardinality limits
 	// =================================================================
 
-	// RHOAI Adoption Tracking (PRIMARY BUSINESS METRIC)
-	TrainingJobsByImageSource = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_jobs_by_image_source_total",
-			Help: "Total training jobs by image source (rhoai_official/community/custom)",
-		},
-		[]string{"image_source"}, // Only 3 possible values
-	)
-
-	// Job Lifecycle Metrics
-	TrainingJobsCreated = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_jobs_created_total",
-			Help: "Total training jobs created",
-		},
-		[]string{"framework"}, // Limited to ~6 frameworks
-	)
-
-	TrainingJobsCompleted = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_jobs_completed_total",
-			Help: "Total training jobs completed",
-		},
-		[]string{"status"}, // Only succeeded/failed
-	)
-
-	TrainingJobsActive = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "training_jobs_active_total",
-			Help: "Currently active training jobs",
-		},
-		[]string{"framework"},
-	)
+	// NOTE: CRD instance tracking metrics are defined in crd_instance_tracking.go
+	// This file only contains internal operational metrics not exported to telemetry
 
 	// =================================================================
 	// INTERNAL METRICS - NOT EXPORTED TO TELEMETRY
@@ -114,18 +84,18 @@ type JobTracker struct {
 // InitMetrics registers all metrics with the controller-runtime registry
 func InitMetrics() {
 	initOnce.Do(func() {
-		// Register only the metrics that will be exported via telemetry
+		// Register only internal operational metrics (not exported to telemetry)
 		metrics.Registry.MustRegister(
-			// Primary telemetry metrics (low cardinality)
-			TrainingJobsByImageSource,
-			TrainingJobsCreated,
-			TrainingJobsCompleted,
-			TrainingJobsActive,
-			
-			// Controller health metrics
+			// Controller health metrics (internal only, not exported)
 			ReconcileErrors,
 			ReconcileDuration,
+			// Internal metrics for debugging (not exported)
+			internalVersionDistribution,
+			internalFailureReasons,
 		)
+
+		// Initialize CRD instance tracking
+		InitCRDInstanceTracking()
 
 		// Start cleanup routine for memory management
 		go jobTracker.cleanupRoutine()

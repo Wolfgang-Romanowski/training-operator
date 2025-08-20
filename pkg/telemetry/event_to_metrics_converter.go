@@ -62,14 +62,19 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	switch event.EventType {
 	case JobCreatedEvent:
 		recordJobCreationMetrics(*details)
+		recordCRDInstanceCreation(*details, event.Job) // Add CRD instance tracking
 	case JobStartedEvent:
 		recordJobStartedMetrics(*details)
+		recordCRDInstanceStatusUpdate(*details, "running") // Track status change
 	case JobCompletedEvent:
 		recordJobCompletionMetrics(*details, true)
+		recordCRDInstanceStatusUpdate(*details, "completed") // Track completion
 	case JobFailedEvent:
 		recordJobFailureMetrics(*details, event.Metadata["reason"])
+		recordCRDInstanceStatusUpdate(*details, "failed") // Track failure
 	case JobDeletedEvent:
 		recordJobDeletionMetrics(*details)
+		recordCRDInstanceDeletion(*details) // Track deletion
 	}
 }
 
@@ -295,14 +300,28 @@ func validateJobDetails(details *JobDetails) error {
 	return nil
 }
 
-// recordJobCreationMetrics records metrics when a job is created
+// recordJobCreationMetrics records customer-focused metrics when a job is created
 func recordJobCreationMetrics(details JobDetails) {
-	// Update counters
-	metrics.TrainingJobsCreated.WithLabelValues(details.Framework).Inc()
-	metrics.TrainingJobsByImageSource.WithLabelValues(details.ImageSource).Inc()
-	metrics.TrainingJobsActive.WithLabelValues(details.Framework).Inc()
-
-	// Track start time for duration calculation
+	// METRIC 1: Image Version Distribution (for deprecation decisions)
+	// Answers: "Can we deprecate PyTorch 2.4 as customers migrate to 2.5?"
+	metrics.TrainingJobsByImageVersion.WithLabelValues(
+		details.Framework,
+		details.ImageSource,
+		details.RHOAIVersion,
+	).Inc()
+	
+	// METRIC 2: Runtime Preference Analysis  
+	// Answers: "Do customers prefer RHOAI vs community/custom images?"
+	metrics.TrainingRuntimePreference.WithLabelValues(details.ImageSource).Inc()
+	
+	// METRIC 3: Framework + Accelerator Usage (for capacity planning)
+	// Answers: "Which combinations are most popular for hardware procurement?"
+	metrics.TrainingFrameworkAcceleratorUsage.WithLabelValues(
+		details.Framework,
+		details.AcceleratorType,
+	).Inc()
+	
+	// Track start time for internal metrics only
 	metrics.RecordJobStart(details.JobKey())
 }
 
@@ -398,4 +417,48 @@ func countAccelerators(replicaSpecs map[kubeflowv1.ReplicaType]*kubeflowv1.Repli
 	}
 
 	return total
+}
+
+// =================================================================
+// CRD INSTANCE TRACKING FUNCTIONS
+// These functions integrate with the new CRD instance tracking system
+// to provide comprehensive instance counting and customer differentiation
+// =================================================================
+
+// recordCRDInstanceCreation records creation of a CRD instance with customer analysis
+func recordCRDInstanceCreation(details JobDetails, job interface{}) {
+	// Generate instance key for tracking
+	instanceKey := fmt.Sprintf("%s/%s/%s", details.Framework, details.Namespace, details.Name)
+	
+	// Perform customer analysis to differentiate real vs test usage
+	customerInfo := classifyCustomerUsage(details.Namespace, job)
+	
+	// Analyze resource requirements for capacity planning
+	resourceInfo := analyzeJobResources(job)
+	
+	// Record CRD instance creation with comprehensive metadata
+	metrics.RecordCRDInstanceCreation(instanceKey, details.Framework, details.Namespace, details.Name, job)
+	
+	klog.V(4).Infof("Recorded CRD instance creation: %s, customer_type: %s, usage_source: %s", 
+		instanceKey, customerInfo.CustomerType, customerInfo.UsageSource)
+}
+
+// recordCRDInstanceStatusUpdate records status changes for CRD instance tracking
+func recordCRDInstanceStatusUpdate(details JobDetails, newStatus string) {
+	instanceKey := fmt.Sprintf("%s/%s/%s", details.Framework, details.Namespace, details.Name)
+	
+	// Update CRD instance status in tracking system
+	metrics.RecordCRDInstanceStatusUpdate(instanceKey, newStatus)
+	
+	klog.V(4).Infof("Updated CRD instance status: %s -> %s", instanceKey, newStatus)
+}
+
+// recordCRDInstanceDeletion records deletion of a CRD instance
+func recordCRDInstanceDeletion(details JobDetails) {
+	instanceKey := fmt.Sprintf("%s/%s/%s", details.Framework, details.Namespace, details.Name)
+	
+	// Record CRD instance deletion
+	metrics.RecordCRDInstanceDeletion(instanceKey)
+	
+	klog.V(4).Infof("Recorded CRD instance deletion: %s", instanceKey)
 }

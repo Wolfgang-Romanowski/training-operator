@@ -114,3 +114,85 @@ data:
                 type: ["type"]
                 status: ["status"]
               valueFrom: ["status"]
+      
+      - groupVersionKind:
+          group: kubeflow.org
+          version: v1
+          kind: PaddleJob
+        metricNamePrefix: training
+        labelsFromPath:
+          namespace: [metadata, namespace]
+          name: [metadata, name]
+        metrics:
+        - name: "paddlejob_info"
+          help: "PaddleJob information"
+          each:
+            type: Info
+            info:
+              labelsFromPath:
+                namespace: [metadata, namespace]
+                name: [metadata, name]
+        
+        - name: "paddlejob_status_phase"
+          help: "PaddleJob status phase"
+          each:
+            type: StateSet
+            stateSet:
+              path: [status, conditions]
+              list: [Created, Running, Restarting, Succeeded, Failed]
+              labelName: phase
+        
+        - name: "paddlejob_start_time_seconds"
+          help: "Start time of PaddleJob in unix timestamp"
+          each:
+            type: Gauge
+            gauge:
+              path: [status, startTime]
+        
+        - name: "paddlejob_completion_time_seconds"
+          help: "Completion time of PaddleJob in unix timestamp"
+          each:
+            type: Gauge
+            gauge:
+              path: [status, completionTime]
+      
+      - groupVersionKind:
+          group: kubeflow.org
+          version: v1
+          kind: JAXJob
+        metricNamePrefix: training
+        labelsFromPath:
+          namespace: [metadata, namespace]
+          name: [metadata, name]
+        metrics:
+        - name: "jaxjob_info"
+          help: "JAXJob information"
+          each:
+            type: Info
+            info:
+              labelsFromPath:
+                namespace: [metadata, namespace]
+                name: [metadata, name]
+        
+        - name: "jaxjob_status_phase"
+          help: "JAXJob status phase"
+          each:
+            type: StateSet
+            stateSet:
+              path: [status, conditions]
+              list: [Created, Running, Restarting, Succeeded, Failed]
+              labelName: phase
+        
+        - name: "jaxjob_start_time_seconds"
+          help: "Start time of JAXJob in unix timestamp"
+          each:
+            type: Gauge
+            gauge:
+              path: [status, startTime]
+        
+        - name: "jaxjob_completion_time_seconds"
+          help: "Completion time of JAXJob in unix timestamp"
+          each:
+            type: Gauge
+            gauge:
+              path: [status, completionTime]

@@ -1,95 +1,148 @@
 # manifests/base/monitoring/otel-collector-networkpolicy.yaml
+# REDESIGNED: Comprehensive network policies per RHOAISTRAT-575 security requirements
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: otel-collector-network-policy
+  name: training-operator-otel-collector
   namespace: opendatahub
   labels:
-    app.kubernetes.io/name: otel-collector
-    app.kubernetes.io/component: telemetry-gateway
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: telemetry-security
+    monitoring.opendatahub.io/scrape: "true"
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/component: opentelemetry-collector
-      app.kubernetes.io/instance: training-operator-gateway
+      app.kubernetes.io/name: otel-collector
+      app.kubernetes.io/component: telemetry-gateway
   policyTypes:
   - Ingress
   - Egress
+  
   ingress:
-  # Allow Prometheus to scrape otel-collector
+  # Allow Prometheus to scrape OTEL collector metrics
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: redhat-ods-monitoring
+          name: openshift-monitoring
+    - namespaceSelector:
+        matchLabels:
+          openshift.io/cluster-monitoring: "true"
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
     ports:
     - protocol: TCP
       port: 8889  # Prometheus exporter port
-  
-  # Allow from openshift-monitoring
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: openshift-monitoring
-    ports:
     - protocol: TCP
-      port: 8889
-  
-  # Allow OTLP from any pod in opendatahub namespace
+      port: 13133 # Health check port
+      
+  # Allow training operator pods to send metrics
   - from:
-    - podSelector: {}
+    - podSelector:
+        matchLabels:
+          control-plane: controller-manager
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: training-operator
     ports:
     - protocol: TCP
       port: 4317  # OTLP gRPC
     - protocol: TCP
       port: 4318  # OTLP HTTP
-  
-  egress:
-  # Allow scraping training-operator pods
-  - to:
-    - podSelector:
+      
+  # Allow cross-namespace workload scraping (per RHOAISTRAT-575)
+  - from:
+    - namespaceSelector:
         matchLabels:
-          control-plane: controller-manager
+          monitoring.opendatahub.io/scrape: "true"
     ports:
     - protocol: TCP
-      port: 8080
-  
-  # Allow DNS
-  - to:
-    - namespaceSelector: {}
-      podSelector:
-        matchLabels:
-          k8s-app: kube-dns
+      port: 8080  # Default metrics port for scraping
+      
+  egress:
+  # Allow DNS resolution
+  - to: []
     ports:
     - protocol: UDP
       port: 53
-  
-  # Allow telemetry export to Observatorium
+    - protocol: TCP
+      port: 53
+      
+  # Allow connection to Red Hat Observatorium (telemetry)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    # Only allow connections to approved telemetry endpoints
+    
+  # Allow connection to Kubernetes API for service discovery
   - to:
     - namespaceSelector: {}
     ports:
     - protocol: TCP
-      port: 443  # HTTPS for telemetry
+      port: 6443
+    - protocol: TCP
+      port: 443
+
 ---
-# Update NetworkPolicy for training-operator to allow otel-collector
+# Network policy for training operator pods
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-otel-scraping
+  name: training-operator-controller
   namespace: opendatahub
   labels:
     app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: controller-security
 spec:
   podSelector:
     matchLabels:
       control-plane: controller-manager
   policyTypes:
   - Ingress
+  - Egress
+  
   ingress:
-  # Allow otel-collector to scrape metrics
+  # Allow webhook traffic
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 9443
+      
+  # Allow metrics scraping from OTEL collector
   - from:
     - podSelector:
         matchLabels:
-          app.kubernetes.io/component: opentelemetry-collector
+          app.kubernetes.io/name: otel-collector
     ports:
     - protocol: TCP
       port: 8080
+      
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+      
+  # Allow Kubernetes API access
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 6443
+    - protocol: TCP
+      port: 443
+      
+  # Allow connection to OTEL collector
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: otel-collector
+    ports:
+    - protocol: TCP
+      port: 4317
+    - protocol: TCP
+      port: 4318

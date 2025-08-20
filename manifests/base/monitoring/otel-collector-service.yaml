@@ -33,6 +33,5 @@ spec:
     targetPort: 13133
     protocol: TCP
   selector:
-    app.kubernetes.io/component: opentelemetry-collector
-    app.kubernetes.io/instance: training-operator-gateway
-    app.kubernetes.io/managed-by: opentelemetry-operator
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: telemetry-gateway

@@ -1,0 +1,52 @@
+# manifests/rhoai/rhoai-telemetry-dashboard.yaml
+# RHOAI-specific Perses dashboard for telemetry metrics per RHOAISTRAT-575
+apiVersion: perses.dev/v1alpha1
+kind: PersesDashboard
+metadata:
+  name: rhoai-training-operator-telemetry
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: training-operator
+spec:
+  datasource:
+    type: prometheus
+    name: training-operator-prometheus
+  display:
+    name: "RHOAI Training Operator - Customer Telemetry"
+    description: "Customer usage analytics for RHOAI Training Operator"
+  duration: 24h
+  refreshInterval: 5m
+  panels:
+    - kind: TimeSeriesChart
+      spec:
+        display:
+          name: "Runtime Image Version Distribution"
+          description: "Helps determine which image versions can be deprecated"
+        queries:
+          - expr: openshift:training_image_version_distribution
+            legend: "{{framework}}-{{version}} ({{image_source}})"
+        legend:
+          position: bottom
+          
+    - kind: PieChart
+      spec:
+        display:
+          name: "Customer Runtime Preference"
+          description: "RHOAI vs Community vs Custom image usage"
+        queries:
+          - expr: sum by (image_source) (openshift:training_runtime_preference_percentage)
+        legend:
+          position: right
+          
+    - kind: BarChart
+      spec:
+        display:
+          name: "Framework + Accelerator Usage"
+          description: "Popular combinations for capacity planning"
+        queries:
+          - expr: topk(10, openshift:training_framework_accelerator_usage)
+            legend: "{{framework}} on {{accelerator_type}}"
+        legend:
+          position: bottom

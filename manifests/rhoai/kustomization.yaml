@@ -1,4 +1,5 @@
 # manifests/rhoai/kustomization.yaml
+# FIXED: Corrected file references and RHOAI-specific configurations
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -8,9 +9,10 @@ namePrefix: kubeflow-
 resources:
   - ../base
   - kubeflow-training-roles.yaml
-  - monitor.yaml
-  - custom-resource-metrics.yaml
-  - rhoai-adoption-dashboard.yaml
+  - rhoai-monitor-config.yaml        # FIXED: was "monitor.yaml" 
+  - customresourcestatemetrics.yaml  # FIXED: was "custom-resource-metrics.yaml"
+  - rhoai-telemetry-dashboard.yaml   # FIXED: was "rhoai-adoption-dashboard.yaml"
+  - namespace-patch.yaml             # ADDED: ensure cluster-monitoring label
 
 configMapGenerator:
   - name: rhoai-config
@@ -32,7 +34,6 @@ replacements:
         name: training-operator
       fieldPaths:
       - spec.template.spec.containers.0.image
-      - spec.template.spec.containers.0.args.2
 
 labels:
   - includeSelectors: true
@@ -40,8 +41,15 @@ labels:
       app.kubernetes.io/component: controller
       app.kubernetes.io/name: training-operator
       app.kubernetes.io/managed-by: rhoai
+      monitoring.opendatahub.io/scrape: "true"  # ADDED: consistent labeling
 
 secretGenerator:
+  - name: training-operator-telemetry-secret
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - telemetry-token=""        # To be filled by RHOAI operator
+      - cluster-id=""             # To be filled by RHOAI operator
   - name: training-operator-webhook-cert
     options:
       disableNameSuffixHash: true
@@ -49,11 +57,4 @@ secretGenerator:
 patches:
   - path: manager_config_patch.yaml
   - path: manager_metrics_patch.yaml
-  - patch: |-
-      - op: remove
-        path: /spec/ports/0
-    target:
-      group: ""
-      version: v1
-      kind: Service
-      name: training-operator
+  # REMOVED: Redundant service port patch - handled by base configuration

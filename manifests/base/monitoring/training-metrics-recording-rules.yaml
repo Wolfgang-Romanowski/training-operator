@@ -1,0 +1,86 @@
+# manifests/base/monitoring/training-metrics-recording-rules.yaml
+# REDESIGNED: Customer-focused recording rules following Red Hat Monitoring Handbook patterns
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: training-operator-telemetry-rules
+  namespace: openshift-monitoring  # MUST be in openshift-monitoring per Red Hat Handbook
+  labels:
+    monitoring.opendatahub.io/scrape: "true"
+    prometheus: kube-prometheus
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: telemetry
+spec:
+  groups:
+  - name: training_operator.telemetry_metrics
+    interval: 30s
+    rules:
+    # =========================================================
+    # RED HAT COMPLIANT TELEMETRY RECORDING RULES
+    # Maximum 3 metrics, each with 1-10 timeseries per RHOAISTRAT-575
+    # =========================================================
+    
+    # METRIC 1: CRD Instance Count (Core requirement)
+    # Business Question: How many training job instances exist by framework and customer type?
+    # Cardinality: 12 timeseries (6 frameworks × 2 customer types)
+    # owners: (@opendatahub/training-operator-team)
+    # consumed-by: Product Management, Usage Analytics
+    - record: openshift:training_crd_instances_active
+      expr: |
+        sum without(instance, pod, endpoint, service, container) (
+          training_operator_crd_instances_active
+        )
+    
+    # METRIC 2: Customer Usage Distribution (Enterprise vs Non-Enterprise)
+    # Business Question: What percentage of usage comes from enterprise customers?
+    # Cardinality: 2 timeseries (enterprise, non-enterprise)
+    # owners: (@opendatahub/training-operator-team)
+    # consumed-by: Product Management, Customer Success
+    - record: openshift:training_customer_usage_percentage
+      expr: |
+        sum without(instance, pod, endpoint, service, container) (
+          (
+            training_operator_customer_usage_total{customer_type="enterprise"}
+            /
+            (sum(training_operator_customer_usage_total) > 0)
+          ) * 100
+        ) or vector(0)
+    
+    # METRIC 3: Framework Adoption Distribution
+    # Business Question: Which training frameworks are most popular?
+    # Cardinality: 6 timeseries (pytorch, tensorflow, mpi, xgboost, jax, paddle)
+    # owners: (@opendatahub/training-operator-team)
+    # consumed-by: Product Planning, Framework Investment Decisions
+    - record: openshift:training_framework_adoption
+      expr: |
+        sum without(instance, pod, endpoint, service, container) (
+          training_operator_framework_adoption_total
+        )
+
+  - name: training_operator.alerts
+    interval: 30s
+    rules:
+    # Minimal alerting for operational issues only
+    - alert: TrainingOperatorTelemetryDown
+      expr: |
+        up{job="training-operator-otel-collector"} == 0
+      for: 5m
+      labels:
+        severity: warning
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Training operator telemetry collection is down"
+        description: "OTEL collector for training operator metrics is not responding"
+        
+    - alert: TrainingOperatorHighMemoryUsage
+      expr: |
+        container_memory_usage_bytes{pod=~"training-operator-.*"} / container_spec_memory_limit_bytes > 0.9
+      for: 10m
+      labels:
+        severity: warning
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Training operator high memory usage"
+        description: "Training operator memory usage is {{ $value | humanizePercentage }}"

@@ -1,3 +1,5 @@
+# manifests/base/monitoring/opentelemetrycollector.yaml
+# REDESIGNED: Clean OTEL-first implementation per RHOAISTRAT-575
 apiVersion: opentelemetry.io/v1alpha1
 kind: OpenTelemetryCollector
 metadata:
@@ -11,7 +13,8 @@ metadata:
 spec:
   mode: deployment
   replicas: 2
-
+  serviceAccount: training-operator-otel-collector
+  
   resources:
     requests:
       cpu: 100m
@@ -19,16 +22,32 @@ spec:
     limits:
       cpu: 1
       memory: 256Mi
-
-  serviceAccount: training-operator-otel-collector
-
+  
+  env:
+    - name: TELEMETRY_ENDPOINT
+      value: "https://infogw.api.openshift.com/metrics/v1/receive"
+    - name: TELEMETRY_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: training-operator-telemetry-secret
+          key: telemetry-token
+    - name: CLUSTER_ID
+      valueFrom:
+        secretKeyRef:
+          name: training-operator-telemetry-secret
+          key: cluster-id
+  
   config: |
     receivers:
-      # Scrape metrics from training-operator pods
+      # Scrape metrics from training-operator and workloads
       prometheus:
         config:
+          global:
+            scrape_interval: 30s
+            scrape_timeout: 10s
           scrape_configs:
-          - job_name: 'training-operator'
+          # CORE: Training operator controller metrics
+          - job_name: 'training-operator-controller'
             scrape_interval: 30s
             kubernetes_sd_configs:
             - role: pod
@@ -36,7 +55,6 @@ spec:
                 names:
                 - opendatahub
             relabel_configs:
-            # Only scrape pods with our label
             - source_labels: [__meta_kubernetes_pod_label_control_plane]
               action: keep
               regex: controller-manager
@@ -60,11 +78,42 @@ spec:
             - source_labels: [__meta_kubernetes_pod_name]
               action: replace
               target_label: pod
+          
+          # WORKLOADS: Cross-namespace workload discovery per RHOAISTRAT-575
+          - job_name: 'training-workloads'
+            scrape_interval: 60s
+            kubernetes_sd_configs:
+            - role: pod
+            relabel_configs:
+            # Only scrape pods with the monitoring label
+            - source_labels: [__meta_kubernetes_pod_label_monitoring_opendatahub_io_scrape]
+              action: keep
+              regex: true
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+              action: keep
+              regex: true
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+              action: replace
+              target_label: __metrics_path__
+              regex: (.+)
+            - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+              action: replace
+              regex: ([^:]+)(?::\d+)?;(\d+)
+              replacement: $1:$2
+              target_label: __address__
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - source_labels: [__meta_kubernetes_namespace]
+              action: replace
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              action: replace
+              target_label: pod
             # Drop high-cardinality labels per Red Hat Handbook
             - action: labeldrop
-              regex: 'pod|instance|endpoint|container'
+              regex: 'instance|endpoint|container'
       
-      # Receive OTLP data (for future traces/logs)
+      # OTLP receivers for traces (future use)
       otlp:
         protocols:
           grpc:
@@ -73,7 +122,13 @@ spec:
             endpoint: 0.0.0.0:4318
 
     processors:
-      # Add Kubernetes metadata
+      # Memory protection
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 20
+      
+      # Kubernetes metadata enrichment
       k8sattributes:
         auth_type: "serviceAccount"
         passthrough: false
@@ -92,54 +147,50 @@ spec:
           - from: resource_attribute
             name: k8s.pod.uid
       
-      # Memory limiter to prevent OOM
-      memory_limiter:
-        check_interval: 1s
-        limit_percentage: 80
-        spike_limit_percentage: 25
-      
-      # Batch processing for efficiency
+      # Batch for efficiency
       batch:
-        send_batch_size: 10000
+        send_batch_size: 1000
         timeout: 10s
       
-      # Filter to only keep training_ metrics
-      filter/metrics:
+      # TELEMETRY FILTER: Red Hat compliant metrics only (3 metrics maximum)
+      filter/telemetry:
         metrics:
           include:
             match_type: regexp
             metric_names:
-            - "^training_.*"
-            - "^openshift:training_.*"
+            - "^training_operator_crd_instances_active$"
+            - "^training_operator_customer_usage_total$"
+            - "^training_operator_framework_adoption_total$"
+            - "^openshift:training_.*"  # Recording rules only
       
-      # Transform for cardinality reduction
-      transform:
+      # Cardinality reduction for telemetry
+      transform/telemetry:
         metric_statements:
         - context: metric
           statements:
-          # Remove any remaining high-cardinality labels
-          - delete_label_values(pod)
-          - delete_label_values(instance)
-          - delete_label_values(job) where job != "training-operator"
+          # Remove high-cardinality labels
+          - delete_label_values(pod) where name == "training_jobs_by_image_version_total"
+          - delete_label_values(instance) where name == "training_runtime_preference_total"
+          - delete_label_values(endpoint) where name == "training_framework_accelerator_usage_total"
       
-      # Resource detection for cloud metadata
+      # Resource detection
       resourcedetection:
         detectors: [openshift, env, system]
         override: false
 
     exporters:
-      # Prometheus exporter for local Prometheus to scrape
+      # Local prometheus exporter for OpenShift monitoring
       prometheus:
         endpoint: "0.0.0.0:8889"
-        namespace: ""  # Don't add namespace prefix
+        namespace: ""
         const_labels:
           collector: "training-operator"
         resource_to_telemetry_conversion:
           enabled: true
       
-      # Prometheus Remote Write for Observatorium (Telemetry)
+      # Red Hat Observatorium for customer telemetry
       prometheusremotewrite/telemetry:
-        endpoint: "${TELEMETRY_ENDPOINT}"  # Set via environment variable
+        endpoint: "${TELEMETRY_ENDPOINT}"
         headers:
           X-Tenant-Id: "openshift-ai"
         auth:
@@ -149,51 +200,37 @@ spec:
         external_labels:
           cluster_id: "${CLUSTER_ID}"
           _origin: "training-operator"
+          _version: "v1.0"
       
-      # Debug logging (disable in production)
+      # Debug logging (info level for production)
       logging:
         loglevel: info
-        
-      # OTLP export for future 3rd party integrations
-      otlp/customer:
-        endpoint: "${CUSTOMER_OTLP_ENDPOINT}"  # Optional customer endpoint
-        headers:
-          api-key: "${CUSTOMER_API_KEY}"
-        tls:
-          insecure: false
-        retry_on_failure:
-          enabled: true
-          initial_interval: 5s
-          max_interval: 30s
-          max_elapsed_time: 300s
 
     extensions:
-      # Health check endpoint
+      # Health monitoring
       health_check:
         endpoint: 0.0.0.0:13133
       
-      # Performance profiling (disable in production)
-      pprof:
-        endpoint: 0.0.0.0:1777
-      
-      # zPages for debugging
-      zpages:
-        endpoint: 0.0.0.0:55679
-      
-      # Bearer token auth for Observatorium
+      # Authentication for Red Hat Observatorium
       bearertokenauth:
         token: "${TELEMETRY_TOKEN}"
 
     service:
-      extensions: [health_check, pprof, zpages, bearertokenauth]
+      extensions: [health_check, bearertokenauth]
       pipelines:
-        # Metrics pipeline
-        metrics:
+        # Customer telemetry pipeline (filtered)
+        metrics/telemetry:
           receivers: [prometheus]
-          processors: [memory_limiter, k8sattributes, filter/metrics, transform, batch, resourcedetection]
-          exporters: [prometheus, prometheusremotewrite/telemetry, logging]
+          processors: [memory_limiter, k8sattributes, filter/telemetry, transform/telemetry, batch, resourcedetection]
+          exporters: [prometheusremotewrite/telemetry, logging]
         
-        # Traces pipeline (for future use)
+        # Local monitoring pipeline (all metrics)
+        metrics/local:
+          receivers: [prometheus]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [prometheus, logging]
+        
+        # Traces pipeline (future)
         traces:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, batch]

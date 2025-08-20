@@ -1,0 +1,63 @@
+# manifests/base/monitoring/observability-ui-plugins.yaml
+# Observability UI plugin configurations per documentation requirements
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: training-operator-dashboards
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: ui-integration
+spec:
+  type: Dashboards
+  
+---
+# Monitoring plugin for training operator alerts and metrics
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: training-operator-monitoring
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: ui-integration
+spec:
+  type: Monitoring
+  monitoring:
+    perses:
+      enabled: true
+      serviceName: training-operator-perses
+      namespace: opendatahub
+    incidents:
+      enabled: false  # Not required for training operator
+
+---
+# Distributed tracing plugin for future trace integration
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: training-operator-tracing
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: ui-integration
+spec:
+  type: DistributedTracing
+
+---
+# Perses datasource configuration for training operator metrics
+apiVersion: perses.dev/v1alpha1
+kind: PersesDatasource
+metadata:
+  name: training-operator-prometheus
+  namespace: opendatahub
+  labels:
+    app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: datasource
+spec:
+  default: true
+  plugin:
+    kind: PrometheusDatasource
+    spec:
+      directUrl: http://thanos-querier.opendatahub.svc.cluster.local:9090
+      # Use thanos querier for deduplication and high availability

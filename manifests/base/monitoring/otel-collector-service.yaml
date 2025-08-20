@@ -12,7 +12,7 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-  # Prometheus exporter endpoint
+  # RHOAISTRAT-575 COMPLIANT: Prometheus exporter for federation pattern
   - name: prometheus
     port: 8889
     targetPort: 8889

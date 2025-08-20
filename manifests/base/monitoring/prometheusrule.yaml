@@ -1,13 +1,16 @@
 # manifests/base/monitoring/prometheusrule.yaml
+# CONSOLIDATED: All recording rules and alerts for training-operator telemetry
+# Compliant with Red Hat Monitoring Handbook and RHOAISTRAT-575
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: training-operator-recording-rules
-  namespace: openshift-monitoring  # MUST be in openshift-monitoring
+  namespace: openshift-monitoring  # MUST be in openshift-monitoring per Red Hat Handbook
   labels:
     monitoring.opendatahub.io/scrape: "true"
     prometheus: kube-prometheus
     app.kubernetes.io/name: training-operator
+    app.kubernetes.io/component: telemetry
 spec:
   groups:
   - name: training_operator.telemetry
@@ -15,6 +18,7 @@ spec:
     rules:
     # =========================================================
     # RED HAT COMPLIANT RECORDING RULES (10 timeseries max)
+    # Business-focused metrics for deprecation and adoption decisions
     # =========================================================
     
     # METRIC 1: Version Deprecation Analysis
@@ -46,6 +50,7 @@ spec:
   - name: training_operator.alerts
     interval: 30s
     rules:
+    # Business-focused alerts for product decisions
     - alert: TrainingOperatorOldVersionHighUsage
       expr: |
         training_operator_image_version_usage{version=~"pytorch-2.[34]|tensorflow-2.1[45]"} > 10
@@ -53,9 +58,11 @@ spec:
       labels:
         severity: info
         component: training-operator
+        team: rhoai-platform
       annotations:
         summary: "High usage of old runtime version {{ $labels.version }}"
         description: "Version {{ $labels.version }} has {{ $value }} active jobs - consider delaying deprecation"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#old-version-high-usage"
         
     - alert: TrainingOperatorLowRHOAIAdoption
       expr: |
@@ -64,9 +71,11 @@ spec:
       labels:
         severity: info
         component: training-operator
+        team: rhoai-platform
       annotations:
         summary: "Low RHOAI runtime adoption"
         description: "Only {{ $value | humanizePercentage }} of jobs use RHOAI official images"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#low-rhoai-adoption"
         
     - alert: TrainingOperatorNoEnterpriseAdoption
       expr: |
@@ -75,6 +84,61 @@ spec:
       labels:
         severity: warning
         component: training-operator
+        team: rhoai-platform
       annotations:
         summary: "Very low enterprise adoption"
         description: "Only {{ $value | humanizePercentage }} of usage is from enterprise customers"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#no-enterprise-adoption"
+    
+    # Operational alerts for system health
+    - alert: TrainingOperatorTelemetryDown
+      expr: |
+        up{job="training-operator-otel-collector"} == 0
+      for: 5m
+      labels:
+        severity: warning
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Training operator telemetry collection is down"
+        description: "OTEL collector for training operator metrics is not responding for 5 minutes"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#telemetry-down"
+        
+    - alert: TrainingOperatorHighCardinality
+      expr: |
+        sum(count by (__name__)({__name__=~"training_operator_.*"})) > 10
+      for: 10m
+      labels:
+        severity: critical
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Training operator metrics exceed cardinality limit"
+        description: "Metrics cardinality {{ $value }} exceeds Red Hat limit of 10 timeseries"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#high-cardinality"
+    
+    - alert: TrainingOperatorHighMemoryUsage
+      expr: |
+        container_memory_usage_bytes{pod=~"training-operator-.*"} / container_spec_memory_limit_bytes > 0.9
+      for: 10m
+      labels:
+        severity: warning
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Training operator high memory usage"
+        description: "Training operator pod {{ $labels.pod }} memory usage is {{ $value | humanizePercentage }}"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#high-memory"
+    
+    - alert: TrainingOperatorVersionSkew
+      expr: |
+        abs(delta(training_operator_image_version_usage[1h])) > 5
+      for: 30m
+      labels:
+        severity: info
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Sudden change in runtime version usage"
+        description: "Version {{ $labels.version }} usage changed by {{ $value }} jobs in the last hour"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#version-skew"

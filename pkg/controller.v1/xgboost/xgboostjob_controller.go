@@ -473,7 +473,7 @@ func (r *XGBoostJobReconciler) onOwnerCreateFunc() func(createEvent event.TypedC
 		xgboostJob := e.Object
 		r.Scheme.Default(xgboostJob)
 		msg := fmt.Sprintf("XGBoostJob %s is created.", e.Object.GetName())
-		logrus.Info()
+		logrus.Info(msg)
 		trainingoperatorcommon.CreatedJobsCounterInc(xgboostJob.Namespace, r.GetFrameworkName())
 		commonutil.UpdateJobConditions(&xgboostJob.Status, kubeflowv1.JobCreated, corev1.ConditionTrue, commonutil.NewReason(kubeflowv1.XGBoostJobKind, commonutil.JobCreatedReason), msg)
 

@@ -5,6 +5,9 @@ package analyzers
 import (
 	"regexp"
 	"strings"
+
+	kubeflowv1 "github.com/kubeflow/training-operator/pkg/apis/kubeflow.org/v1"
+	"k8s.io/klog/v2"
 )
 
 // ImageAnalysisResult contains image analysis results
@@ -166,4 +169,141 @@ func IsRHOAIImage(image string) bool {
 		}
 	}
 	return false
+}
+
+// ========================================================================
+// CONSOLIDATED IMAGE EXTRACTION FUNCTIONS
+// Single source of truth for extracting images from all job types
+// ========================================================================
+
+// ExtractContainerImage extracts the container image from various job types
+// This consolidates all image extraction logic in one place
+func ExtractContainerImage(job interface{}, framework string) string {
+	frameworkLower := strings.ToLower(framework)
+
+	switch frameworkLower {
+	case "pytorch":
+		if pytorchJob, ok := job.(*kubeflowv1.PyTorchJob); ok {
+			return ExtractPyTorchImage(pytorchJob)
+		}
+	case "tensorflow":
+		if tfJob, ok := job.(*kubeflowv1.TFJob); ok {
+			return ExtractTensorFlowImage(tfJob)
+		}
+	case "mpi":
+		if mpiJob, ok := job.(*kubeflowv1.MPIJob); ok {
+			return ExtractMPIImage(mpiJob)
+		}
+	case "xgboost":
+		if xgboostJob, ok := job.(*kubeflowv1.XGBoostJob); ok {
+			return ExtractXGBoostImage(xgboostJob)
+		}
+	case "paddle":
+		if paddleJob, ok := job.(*kubeflowv1.PaddleJob); ok {
+			return ExtractPaddleImage(paddleJob)
+		}
+	case "jax":
+		if jaxJob, ok := job.(*kubeflowv1.JAXJob); ok {
+			return ExtractJAXImage(jaxJob)
+		}
+	}
+
+	klog.V(4).Infof("Could not extract image for framework %s", framework)
+	return ""
+}
+
+// ExtractPyTorchImage extracts image from PyTorchJob
+func ExtractPyTorchImage(job *kubeflowv1.PyTorchJob) string {
+	if job == nil || job.Spec.PyTorchReplicaSpecs == nil {
+		return ""
+	}
+
+	// Try Master first, then Worker for consistency
+	for _, replicaType := range []kubeflowv1.ReplicaType{
+		kubeflowv1.PyTorchJobReplicaTypeMaster,
+		kubeflowv1.PyTorchJobReplicaTypeWorker,
+	} {
+		if replica, ok := job.Spec.PyTorchReplicaSpecs[replicaType]; ok {
+			if replica != nil && len(replica.Template.Spec.Containers) > 0 {
+				return replica.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+// ExtractTensorFlowImage extracts image from TFJob
+func ExtractTensorFlowImage(job *kubeflowv1.TFJob) string {
+	if job == nil || job.Spec.TFReplicaSpecs == nil {
+		return ""
+	}
+
+	// Try Chief first, then Worker
+	for _, replicaType := range []kubeflowv1.ReplicaType{
+		kubeflowv1.TFJobReplicaTypeChief,
+		kubeflowv1.TFJobReplicaTypeWorker,
+	} {
+		if replica, ok := job.Spec.TFReplicaSpecs[replicaType]; ok {
+			if replica != nil && len(replica.Template.Spec.Containers) > 0 {
+				return replica.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+// ExtractMPIImage extracts image from MPIJob
+func ExtractMPIImage(job *kubeflowv1.MPIJob) string {
+	if job == nil || job.Spec.MPIReplicaSpecs == nil {
+		return ""
+	}
+
+	if launcher, ok := job.Spec.MPIReplicaSpecs[kubeflowv1.MPIJobReplicaTypeLauncher]; ok {
+		if launcher != nil && len(launcher.Template.Spec.Containers) > 0 {
+			return launcher.Template.Spec.Containers[0].Image
+		}
+	}
+	return ""
+}
+
+// ExtractXGBoostImage extracts image from XGBoostJob
+func ExtractXGBoostImage(job *kubeflowv1.XGBoostJob) string {
+	if job == nil || job.Spec.XGBReplicaSpecs == nil {
+		return ""
+	}
+
+	if master, ok := job.Spec.XGBReplicaSpecs[kubeflowv1.XGBoostJobReplicaTypeMaster]; ok {
+		if master != nil && len(master.Template.Spec.Containers) > 0 {
+			return master.Template.Spec.Containers[0].Image
+		}
+	}
+	return ""
+}
+
+// ExtractPaddleImage extracts image from PaddleJob
+func ExtractPaddleImage(job *kubeflowv1.PaddleJob) string {
+	if job == nil || job.Spec.PaddleReplicaSpecs == nil {
+		return ""
+	}
+
+	if master, ok := job.Spec.PaddleReplicaSpecs[kubeflowv1.PaddleJobReplicaTypeMaster]; ok {
+		if master != nil && len(master.Template.Spec.Containers) > 0 {
+			return master.Template.Spec.Containers[0].Image
+		}
+	}
+	return ""
+}
+
+// ExtractJAXImage extracts image from JAXJob
+func ExtractJAXImage(job *kubeflowv1.JAXJob) string {
+	if job == nil || job.Spec.JAXReplicaSpecs == nil {
+		return ""
+	}
+
+	if worker, ok := job.Spec.JAXReplicaSpecs[kubeflowv1.JAXJobReplicaTypeWorker]; ok {
+		if worker != nil && len(worker.Template.Spec.Containers) > 0 {
+			return worker.Template.Spec.Containers[0].Image
+		}
+	}
+	return ""
 }

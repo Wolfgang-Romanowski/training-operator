@@ -182,7 +182,8 @@ spec:
         override: false
 
     exporters:
-      # Local prometheus exporter for OpenShift monitoring
+      # RHOAISTRAT-575 COMPLIANT: Prometheus scrapes from OTEL (pull model)
+      # NOTE: Requires support exception from OBS team until prometheus exporter goes GA
       prometheus:
         endpoint: "0.0.0.0:8889"
         namespace: ""
@@ -221,13 +222,14 @@ spec:
     service:
       extensions: [health_check, bearertokenauth]
       pipelines:
-        # Customer telemetry pipeline (filtered)
+        # RHOAISTRAT-575 COMPLIANT: Dual pipeline with prometheus federation
+        # Customer telemetry pipeline (filtered) - Red Hat Observatorium
         metrics/telemetry:
           receivers: [prometheus]
           processors: [memory_limiter, k8sattributes, filter/telemetry, transform/telemetry, batch, resourcedetection]
           exporters: [prometheusremotewrite/telemetry, logging]
         
-        # Local monitoring pipeline (all metrics)
+        # Local monitoring pipeline (all metrics) - Prometheus federation pattern
         metrics/local:
           receivers: [prometheus]
           processors: [memory_limiter, k8sattributes, batch]

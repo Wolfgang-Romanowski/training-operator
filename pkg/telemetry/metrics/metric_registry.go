@@ -3,6 +3,7 @@
 package metrics
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -132,10 +133,7 @@ func GetTelemetryMetricCount() int {
 // ValidateCardinality validates that metrics comply with Red Hat cardinality limits
 func ValidateCardinality() error {
 	if GetTelemetryMetricCount() > 3 {
-		return prometheus.NewInvalidMetricError(
-			prometheus.NewDesc("invalid", "Too many telemetry metrics", nil, nil),
-			"metric count exceeds Red Hat limit of 3",
-		)
+		return fmt.Errorf("metric count exceeds Red Hat limit of 3: found %d metrics", GetTelemetryMetricCount())
 	}
 	return nil
 }

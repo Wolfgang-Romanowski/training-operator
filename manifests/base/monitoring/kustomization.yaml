@@ -12,7 +12,7 @@ resources:
   
   # Metrics collection and processing
   - training-operator-servicemonitor.yaml
-  - training-metrics-recording-rules.yaml
+  - prometheusrule.yaml
   
   # Deployment configuration
   - deployment-metrics-patch.yaml

@@ -203,7 +203,7 @@ func RecordJobDeletion(framework, version, namespace, name string) {
 	imageVersionTracker.mu.Lock()
 	defer imageVersionTracker.mu.Unlock()
 
-	if data, ok := imageVersionTracker.activeVersions[key]; ok {
+	if _, ok := imageVersionTracker.activeVersions[key]; ok {
 		// Decrement version gauge
 		if imageVersionTracker.topVersions[normalizedVersion] > 0 {
 			imageVersionTracker.topVersions[normalizedVersion]--

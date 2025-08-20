@@ -47,7 +47,7 @@ func classifyCustomerUsage(namespace string, job interface{}) *CustomerInfo {
 
 	// Simple binary classification: enterprise vs non-enterprise (Red Hat compliant)
 	customerInfo.CustomerType = determineSimpleCustomerType(namespace, annotations, labels)
-	
+
 	return customerInfo
 }
 
@@ -60,14 +60,14 @@ func classifyNamespacePattern(namespace string) string {
 		"prod", "production", "live", "release", "stable",
 		"main", "master", "deploy", "runtime",
 	}
-	
+
 	// Development environment patterns
 	developmentPatterns := []string{
 		"dev", "develop", "development", "staging", "stage",
 		"test", "testing", "qa", "uat", "integration",
 		"int", "pre-prod", "preprod",
 	}
-	
+
 	// Demo/example patterns
 	demoPatterns := []string{
 		"demo", "example", "sample", "tutorial", "workshop",
@@ -133,12 +133,12 @@ func determineSimpleCustomerType(namespace string, annotations, labels map[strin
 
 	// Simple namespace-based classification (no detailed pattern analysis)
 	namespaceLower := strings.ToLower(namespace)
-	
+
 	// Production patterns suggest enterprise usage
 	if strings.Contains(namespaceLower, "prod") || strings.Contains(namespaceLower, "production") {
 		return "enterprise"
 	}
-	
+
 	// Default to non-enterprise for privacy (includes dev, test, demo, unknown)
 	return "non-enterprise"
 }
@@ -209,21 +209,21 @@ func extractTenantHints(namespace string, annotations, labels map[string]string)
 func analyzeJobResources(job interface{}) *ResourceInfo {
 	resourceInfo := &ResourceInfo{
 		CPUCategory:    "unknown",
-		MemoryCategory: "unknown", 
+		MemoryCategory: "unknown",
 		GPUCategory:    "none",
 		StorageType:    "unknown",
 	}
 
 	// This would need to be implemented based on specific job types
 	// For now, provide a basic implementation that can be extended
-	
+
 	// TODO: Implement resource analysis based on job specifications
 	// This would analyze:
 	// - CPU requests/limits from pod specs
-	// - Memory requests/limits from pod specs  
+	// - Memory requests/limits from pod specs
 	// - GPU requests from resource requirements
 	// - Storage volume configurations
-	
+
 	// Placeholder implementation - should be extended based on actual job specs
 	resourceInfo.CPUCategory = "medium"    // Default assumption
 	resourceInfo.MemoryCategory = "medium" // Default assumption

@@ -1,5 +1,3 @@
-// pkg/telemetry/metrics/metric_registry.go
-// Centralized metrics registry - business-focused metrics for image deprecation decisions
 package metrics
 
 import (
@@ -17,40 +15,30 @@ var (
 	initialized    bool
 )
 
-// Registry holds all telemetry metrics
+// Registry holds all telemetry and operational metrics for the training operator.
 type Registry struct {
-	// RED HAT COMPLIANT TELEMETRY METRICS (3 metrics, 10 timeseries max)
-
-	// METRIC 1: Image Version Usage (5 timeseries)
-	ImageVersionUsage *prometheus.GaugeVec
-
-	// METRIC 2: Image Source Preference (3 timeseries)
+	ImageVersionUsage     *prometheus.GaugeVec
 	ImageSourcePreference *prometheus.CounterVec
-
-	// METRIC 3: Enterprise Adoption (2 timeseries)
-	EnterpriseAdoption *prometheus.CounterVec
-
-	// INTERNAL OPERATIONAL METRICS (not exported to telemetry)
-	ReconcileErrors   *prometheus.CounterVec
-	ReconcileDuration *prometheus.HistogramVec
-	InternalFailures  *prometheus.CounterVec
+	EnterpriseAdoption    *prometheus.CounterVec
+	ReconcileErrors       *prometheus.CounterVec
+	ReconcileDuration     *prometheus.HistogramVec
+	InternalFailures      *prometheus.CounterVec
 }
 
 var registry *Registry
 
-// Initialize creates and registers all telemetry metrics
+// Initialize creates and registers all telemetry and operational metrics
+// for the training operator controllers.
 func Initialize() error {
 	var err error
 	initOnce.Do(func() {
-		klog.Info("Initializing telemetry metrics registry (10 timeseries compliant)")
+		klog.Info("Initializing telemetry metrics registry")
 
 		registry = &Registry{
-			// Business-focused telemetry metrics (Red Hat compliant)
 			ImageVersionUsage:     TrainingOperatorImageVersionUsage,
 			ImageSourcePreference: TrainingOperatorImageSourcePreference,
 			EnterpriseAdoption:    TrainingOperatorEnterpriseAdoption,
 
-			// Internal operational metrics
 			ReconcileErrors: prometheus.NewCounterVec(
 				prometheus.CounterOpts{
 					Name: "training_operator_reconcile_errors_total",
@@ -77,10 +65,8 @@ func Initialize() error {
 			),
 		}
 
-		// Initialize CRD tracking which registers the business metrics
 		InitCRDInstanceTracking()
 
-		// Register internal metrics
 		metrics.Registry.MustRegister(
 			registry.ReconcileErrors,
 			registry.ReconcileDuration,
@@ -88,12 +74,12 @@ func Initialize() error {
 		)
 
 		initialized = true
-		klog.Info("Telemetry metrics registry initialized with 10 timeseries compliance")
+		klog.Info("Telemetry metrics registry initialized successfully")
 	})
 	return err
 }
 
-// EnsureInitialized ensures metrics are initialized (backward compatibility)
+// EnsureInitialized ensures metrics are initialized exactly once for backward compatibility.
 func EnsureInitialized() {
 	ensureInitOnce.Do(func() {
 		if err := Initialize(); err != nil {
@@ -102,14 +88,14 @@ func EnsureInitialized() {
 	})
 }
 
-// InitMetrics is called by EnsureInitialized for backward compatibility
+// InitMetrics provides legacy initialization for backward compatibility with existing code.
 func InitMetrics() {
 	if err := Initialize(); err != nil {
 		klog.Errorf("Failed to initialize metrics: %v", err)
 	}
 }
 
-// Get returns the metrics registry instance
+// Get returns the shared metrics registry instance, initializing it if necessary.
 func Get() *Registry {
 	if !initialized {
 		if err := Initialize(); err != nil {
@@ -120,20 +106,20 @@ func Get() *Registry {
 	return registry
 }
 
-// IsInitialized returns whether the metrics registry has been initialized
+// IsInitialized returns true if the metrics registry has been successfully initialized.
 func IsInitialized() bool {
 	return initialized
 }
 
-// GetTelemetryMetricCount returns the number of telemetry metrics (should be ≤ 3)
+// GetTelemetryMetricCount returns the number of telemetry metrics being exported.
 func GetTelemetryMetricCount() int {
-	return 3 // ImageVersionUsage, ImageSourcePreference, EnterpriseAdoption
+	return 3
 }
 
-// ValidateCardinality validates that metrics comply with Red Hat cardinality limits
-func ValidateCardinality() error {
+// ValidateCardinalityLimits ensures metrics stay within acceptable cardinality limits.
+func ValidateCardinalityLimits() error {
 	if GetTelemetryMetricCount() > 3 {
-		return fmt.Errorf("metric count exceeds Red Hat limit of 3: found %d metrics", GetTelemetryMetricCount())
+		return fmt.Errorf("metric count exceeds limit: found %d metrics, expected <= 3", GetTelemetryMetricCount())
 	}
 	return nil
 }

@@ -1,5 +1,3 @@
-// pkg/telemetry/event_to_metrics_converter.go
-// FIXED: Properly tracks image versions with 10 timeseries limit compliance
 package telemetry
 
 import (
@@ -7,19 +5,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kubeflow/training-operator/pkg/telemetry/analyzers"
-	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
+
+	"github.com/kubeflow/training-operator/pkg/telemetry/analyzers"
+	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 )
 
-// convertEventToMetrics is the main entry point for event processing
+// convertEventToMetrics processes training job events and converts them to
+// telemetry metrics with appropriate timeout protection.
 func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	if !isTelemetryEnabled() {
 		return
 	}
 
-	// Add timeout protection
 	processCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -27,7 +26,7 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	case JobCreatedEvent:
 		convertJobCreatedToMetrics(processCtx, event)
 	case JobStartedEvent:
-		klog.V(4).Infof("Job started: %s/%s", event.JobNamespace, event.JobName)
+		klog.V(4).InfoS("Job started event processed", "namespace", event.JobNamespace, "name", event.JobName)
 	case JobCompletedEvent:
 		convertJobCompletedToMetrics(processCtx, event, true)
 	case JobFailedEvent:
@@ -35,16 +34,16 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	case JobDeletedEvent:
 		convertJobDeletedToMetrics(processCtx, event)
 	default:
-		klog.V(4).Infof("Unknown event type: %s", event.EventType)
+		klog.V(4).InfoS("Unknown job event type", "eventType", event.EventType)
 	}
 }
 
-// convertJobCreatedToMetrics handles job creation events with 10 timeseries limit
+// convertJobCreatedToMetrics processes job creation events by extracting image
+// information, analyzing customer type, and updating telemetry metrics.
 func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
-	// Extract job metadata
 	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
-		klog.Warning("Job does not implement metav1.Object")
+		klog.Warning("Job does not implement metav1.Object interface")
 		return
 	}
 
@@ -52,27 +51,20 @@ func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
 	name := metaObj.GetName()
 	framework := strings.ToLower(event.Framework)
 
-	// Analyze customer type using centralized classification
-	// This uses the ClassifyCustomer from metrics package which provides
-	// binary classification (enterprise/non-enterprise) for Red Hat compliance
 	customerInfo := metrics.ClassifyCustomer(namespace, event.Job)
 	customerType := "non-enterprise"
 	if customerInfo != nil {
-		// Already normalized to binary classification
 		customerType = customerInfo.CustomerType
 	}
 
-	// Extract and analyze container image using centralized extraction
 	image := analyzers.ExtractContainerImage(event.Job, framework)
 	if image == "" {
-		klog.V(3).Infof("Could not extract image for job %s/%s", namespace, name)
+		klog.V(3).InfoS("Could not extract container image from job", "namespace", namespace, "name", name, "framework", framework)
 		image = "unknown"
 	}
 
 	imageAnalysis := analyzers.AnalyzeContainerImage(image)
 
-	// Track metrics with strict cardinality limits
-	// Total must not exceed 10 timeseries across all metrics
 	metrics.TrackImageVersion(
 		framework,
 		imageAnalysis.RHOAIVersion,
@@ -82,12 +74,18 @@ func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
 		name,
 	)
 
-	klog.V(2).Infof("Job %s/%s created - Framework: %s, Version: %s, Source: %s, Customer: %s",
-		namespace, name, framework, imageAnalysis.RHOAIVersion,
-		imageAnalysis.ImageSource, customerType)
+	klog.V(2).InfoS("Job creation metrics recorded",
+		"namespace", namespace,
+		"name", name,
+		"framework", framework,
+		"version", imageAnalysis.RHOAIVersion,
+		"imageSource", imageAnalysis.ImageSource,
+		"customerType", customerType,
+		"acceleratorType", imageAnalysis.AcceleratorType)
 }
 
-// convertJobCompletedToMetrics handles job completion events
+// convertJobCompletedToMetrics processes job completion events, logging the final
+// status of training jobs for telemetry analysis.
 func convertJobCompletedToMetrics(ctx context.Context, event JobEventData, succeeded bool) {
 	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
@@ -102,10 +100,11 @@ func convertJobCompletedToMetrics(ctx context.Context, event JobEventData, succe
 		status = "succeeded"
 	}
 
-	klog.V(3).Infof("Job %s/%s completed with status: %s", namespace, name, status)
+	klog.V(3).InfoS("Job completion event processed", "namespace", namespace, "name", name, "status", status, "framework", event.Framework)
 }
 
-// convertJobDeletedToMetrics handles job deletion events
+// convertJobDeletedToMetrics processes job deletion events by cleaning up
+// associated telemetry tracking for the deleted training job.
 func convertJobDeletedToMetrics(ctx context.Context, event JobEventData) {
 	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
@@ -116,15 +115,11 @@ func convertJobDeletedToMetrics(ctx context.Context, event JobEventData) {
 	name := metaObj.GetName()
 	framework := strings.ToLower(event.Framework)
 
-	// Extract image to determine version for cleanup using centralized extraction
 	image := analyzers.ExtractContainerImage(event.Job, framework)
 	if image != "" {
 		imageAnalysis := analyzers.AnalyzeContainerImage(image)
 		metrics.RemoveImageVersion(framework, imageAnalysis.RHOAIVersion, namespace, name)
 	}
 
-	klog.V(3).Infof("Job %s/%s deleted", namespace, name)
+	klog.V(3).InfoS("Job deletion metrics updated", "namespace", namespace, "name", name, "framework", framework)
 }
-
-// All image extraction functions have been moved to analyzers/image_analyzer.go
-// This provides a single source of truth for image extraction logic

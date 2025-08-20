@@ -1,6 +1,3 @@
-// pkg/telemetry/metrics/metric_definitions.go
-// REDESIGNED: Strictly Red Hat compliant - max 10 timeseries total
-// Defines business-focused metrics for image deprecation decisions
 package metrics
 
 import (
@@ -15,25 +12,14 @@ import (
 )
 
 var (
-	// =================================================================
-	// RED HAT COMPLIANT TELEMETRY METRICS - 3 METRICS, 10 TIMESERIES MAX
-	// Strictly compliant with Red Hat Monitoring Handbook limits
-	// =================================================================
-
-	// METRIC 1: RHOAI Version Distribution (Answers: Can we deprecate PyTorch 2.4?)
-	// Cardinality: 5 timeseries (top 5 versions we care about)
-	// Business value: Deprecation decisions for runtime images
 	TrainingOperatorImageVersionUsage = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "training_operator_image_version_usage",
 			Help: "Active training jobs by RHOAI runtime version for deprecation analysis",
 		},
-		[]string{"version"}, // Just version, no framework to stay under 10
+		[]string{"version"},
 	)
 
-	// METRIC 2: Image Source Preference (Answers: Do customers prefer RHOAI images?)
-	// Cardinality: 3 timeseries (rhoai_official, community, custom)
-	// Business value: Investment decisions in runtime images
 	TrainingOperatorImageSourcePreference = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_operator_image_source_preference_total",
@@ -42,9 +28,6 @@ var (
 		[]string{"image_source"},
 	)
 
-	// METRIC 3: Enterprise RHOAI Adoption (Key business metric)
-	// Cardinality: 2 timeseries (enterprise, non-enterprise)
-	// Business value: Enterprise adoption of RHOAI runtimes
 	TrainingOperatorEnterpriseAdoption = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "training_operator_enterprise_adoption_total",
@@ -53,11 +36,6 @@ var (
 		[]string{"customer_type"},
 	)
 
-	// Total cardinality: 5 + 3 + 2 = 10 timeseries (exactly at limit)
-
-	// =================================================================
-	// INTERNAL TRACKING STRUCTURES
-	// =================================================================
 
 	imageVersionTracker = &ImageVersionTracker{
 		activeVersions:  make(map[string]*VersionData),
@@ -70,13 +48,12 @@ var (
 
 	crdTrackingInitOnce sync.Once
 
-	// Track only the most important versions for deprecation decisions
 	trackedVersions = []string{
 		"pytorch-2.4",
 		"pytorch-2.3",
 		"tensorflow-2.15",
 		"tensorflow-2.14",
-		"other", // Everything else
+		"other",
 	}
 )
 
@@ -114,45 +91,41 @@ type ResourceInfo struct {
 	StorageType    string
 }
 
-// InitializeMetrics initializes all business-focused metrics
+// InitializeMetrics initializes all telemetry metrics and starts background
+// cleanup routines for tracking active job versions.
 func InitializeMetrics() {
 	crdTrackingInitOnce.Do(func() {
-		// Register business-focused metrics (Red Hat compliant: 3 metrics, 10 timeseries max)
 		metrics.Registry.MustRegister(
 			TrainingOperatorImageVersionUsage,
 			TrainingOperatorImageSourcePreference,
 			TrainingOperatorEnterpriseAdoption,
 		)
 
-		// Initialize top versions tracking
 		for _, v := range trackedVersions {
 			imageVersionTracker.topVersions[v] = 0
-			// Initialize gauge to 0
 			TrainingOperatorImageVersionUsage.WithLabelValues(v).Set(0)
 		}
 
-		// Start cleanup routine for stale version data
 		go imageVersionTracker.cleanupRoutine()
 
-		klog.Info("Telemetry metrics initialized with Red Hat compliant limits (10 timeseries max)")
+		klog.Info("Telemetry metrics initialized successfully")
 	})
 }
 
-// InitCRDInstanceTracking is an alias for backward compatibility
+// InitCRDInstanceTracking initializes metrics for backward compatibility with existing code.
 func InitCRDInstanceTracking() {
 	InitializeMetrics()
 }
 
-// RecordJobCreation records a new training job creation with image version tracking
+// RecordJobCreation records metrics when a new training job is created,
+// tracking image version usage, source preferences, and enterprise adoption.
 func RecordJobCreation(framework, version, imageSource, customerType, namespace, name string) {
-	// Normalize version to tracked versions only
-	normalizedVersion := normalizeVersion(framework, version)
+	normalizedVersion := normalizeVersionForTracking(framework, version)
 	key := normalizedVersion + "/" + namespace + "/" + name
 
 	imageVersionTracker.mu.Lock()
 	defer imageVersionTracker.mu.Unlock()
 
-	// Prevent unbounded growth
 	if len(imageVersionTracker.activeVersions) >= imageVersionTracker.maxEntries {
 		imageVersionTracker.removeOldestLocked()
 	}
@@ -172,39 +145,41 @@ func RecordJobCreation(framework, version, imageSource, customerType, namespace,
 	}
 
 	if isNew {
-		// Update version gauge (limited to 5 tracked versions)
 		imageVersionTracker.topVersions[normalizedVersion]++
 		TrainingOperatorImageVersionUsage.WithLabelValues(normalizedVersion).Inc()
 
-		// Update image source preference (3 timeseries)
 		TrainingOperatorImageSourcePreference.WithLabelValues(imageSource).Inc()
 
-		// Update enterprise adoption (2 timeseries) - only for RHOAI images
 		if imageSource == "rhoai_official" {
-			simplifiedCustomerType := simplifyCustomerType(customerType)
+			simplifiedCustomerType := simplifyCustomerTypeForClassification(customerType)
 			TrainingOperatorEnterpriseAdoption.WithLabelValues(simplifiedCustomerType).Inc()
 		}
 
-		klog.V(4).Infof("Recorded job creation: version=%s (from %s %s), source=%s, customer=%s",
-			normalizedVersion, framework, version, imageSource, customerType)
+		klog.V(4).InfoS("Recorded job creation",
+			"version", normalizedVersion,
+			"framework", framework,
+			"originalVersion", version,
+			"imageSource", imageSource,
+			"customerType", customerType,
+			"namespace", namespace,
+			"name", name)
 	}
 }
 
-// TrackImageVersion is an alias for RecordJobCreation (backward compatibility)
+// TrackImageVersion records image version usage for backward compatibility with existing code.
 func TrackImageVersion(framework, version, imageSource, customerType, namespace, name string) {
 	RecordJobCreation(framework, version, imageSource, customerType, namespace, name)
 }
 
-// RecordJobDeletion records when a training job is deleted
+// RecordJobDeletion decrements job tracking metrics when a training job is deleted.
 func RecordJobDeletion(framework, version, namespace, name string) {
-	normalizedVersion := normalizeVersion(framework, version)
+	normalizedVersion := normalizeVersionForTracking(framework, version)
 	key := normalizedVersion + "/" + namespace + "/" + name
 
 	imageVersionTracker.mu.Lock()
 	defer imageVersionTracker.mu.Unlock()
 
 	if _, ok := imageVersionTracker.activeVersions[key]; ok {
-		// Decrement version gauge
 		if imageVersionTracker.topVersions[normalizedVersion] > 0 {
 			imageVersionTracker.topVersions[normalizedVersion]--
 			TrainingOperatorImageVersionUsage.WithLabelValues(normalizedVersion).Dec()
@@ -212,26 +187,26 @@ func RecordJobDeletion(framework, version, namespace, name string) {
 
 		delete(imageVersionTracker.activeVersions, key)
 
-		klog.V(4).Infof("Recorded job deletion: version=%s", normalizedVersion)
+		klog.V(4).InfoS("Recorded job deletion", "version", normalizedVersion, "namespace", namespace, "name", name)
 	}
 }
 
-// RemoveImageVersion is an alias for RecordJobDeletion (backward compatibility)
+// RemoveImageVersion removes image version tracking for backward compatibility with existing code.
 func RemoveImageVersion(framework, version, namespace, name string) {
 	RecordJobDeletion(framework, version, namespace, name)
 }
 
-// ClassifyCustomer analyzes job metadata to determine customer type
+// ClassifyCustomer analyzes job metadata and namespace patterns to determine
+// whether the job represents enterprise or non-enterprise usage.
 func ClassifyCustomer(namespace string, job interface{}) *CustomerInfo {
 	customerInfo := &CustomerInfo{
-		CustomerType:     "non-enterprise", // Default to non-enterprise for privacy
+		CustomerType:     "non-enterprise",
 		UsageSource:      "unknown",
 		NamespacePattern: "unknown",
-		TenantHints:      []string{}, // Empty for privacy compliance
+		TenantHints:      []string{},
 		CachedAt:         time.Now(),
 	}
 
-	// Extract metadata from job
 	var annotations map[string]string
 	var labels map[string]string
 
@@ -240,9 +215,7 @@ func ClassifyCustomer(namespace string, job interface{}) *CustomerInfo {
 		labels = metaAccessor.GetLabels()
 	}
 
-	// Check for enterprise indicators
 	if annotations != nil {
-		// RHOAI UI created jobs indicate enterprise usage
 		if source, exists := annotations["rhods.openshiftai.io/source"]; exists {
 			if source == "dashboard" || source == "ui" || source == "workbench" {
 				customerInfo.CustomerType = "enterprise"
@@ -250,7 +223,6 @@ func ClassifyCustomer(namespace string, job interface{}) *CustomerInfo {
 			}
 		}
 
-		// Notebook integration indicates enterprise usage
 		if _, exists := annotations["notebooks.openshiftai.io/notebook-name"]; exists {
 			customerInfo.CustomerType = "enterprise"
 			customerInfo.UsageSource = "rhoai-notebook"
@@ -258,7 +230,6 @@ func ClassifyCustomer(namespace string, job interface{}) *CustomerInfo {
 	}
 
 	if labels != nil {
-		// Production environment labels
 		if env, exists := labels["environment"]; exists {
 			if env == "production" || env == "prod" {
 				customerInfo.CustomerType = "enterprise"
@@ -266,7 +237,6 @@ func ClassifyCustomer(namespace string, job interface{}) *CustomerInfo {
 		}
 	}
 
-	// Simple namespace-based classification
 	namespaceLower := strings.ToLower(namespace)
 	if strings.Contains(namespaceLower, "prod") ||
 		strings.Contains(namespaceLower, "production") {
@@ -277,7 +247,7 @@ func ClassifyCustomer(namespace string, job interface{}) *CustomerInfo {
 	return customerInfo
 }
 
-// classifyCustomerUsage is an alias for ClassifyCustomer (backward compatibility)
+// classifyCustomerUsage provides backward compatibility for existing customer classification code.
 func classifyCustomerUsage(namespace string, job interface{}) *CustomerInfo {
 	return ClassifyCustomer(namespace, job)
 }
@@ -320,16 +290,15 @@ func GetMetricsSummary() map[string]interface{} {
 	}
 }
 
-// normalizeVersion maps versions to our tracked set to maintain cardinality limit
-func normalizeVersion(framework, version string) string {
-	// Check if it's one of our specifically tracked versions
-	for _, tracked := range trackedVersions[:len(trackedVersions)-1] { // Exclude "other"
+// normalizeVersionForTracking maps framework versions to tracked categories
+// to maintain metric cardinality limits.
+func normalizeVersionForTracking(framework, version string) string {
+	for _, tracked := range trackedVersions[:len(trackedVersions)-1] {
 		if version == tracked {
 			return tracked
 		}
 	}
 
-	// Map pytorch versions we care about
 	if strings.Contains(strings.ToLower(version), "pytorch") {
 		if strings.Contains(version, "2.4") || strings.Contains(version, "2-4") {
 			return "pytorch-2.4"
@@ -339,7 +308,6 @@ func normalizeVersion(framework, version string) string {
 		}
 	}
 
-	// Map tensorflow versions we care about
 	if strings.Contains(strings.ToLower(version), "tensorflow") {
 		if strings.Contains(version, "2.15") || strings.Contains(version, "2-15") {
 			return "tensorflow-2.15"
@@ -349,12 +317,12 @@ func normalizeVersion(framework, version string) string {
 		}
 	}
 
-	// Everything else goes to "other"
 	return "other"
 }
 
-// simplifyCustomerType reduces to binary classification for Red Hat compliance
-func simplifyCustomerType(customerType string) string {
+// simplifyCustomerTypeForClassification normalizes customer types to binary
+// enterprise/non-enterprise classification for consistent metrics.
+func simplifyCustomerTypeForClassification(customerType string) string {
 	customerTypeLower := strings.ToLower(customerType)
 	if customerTypeLower == "enterprise" ||
 		strings.Contains(customerTypeLower, "prod") ||
@@ -364,7 +332,7 @@ func simplifyCustomerType(customerType string) string {
 	return "non-enterprise"
 }
 
-// analyzeJobResources placeholder for resource analysis
+// analyzeJobResources provides placeholder resource analysis for future extension.
 func analyzeJobResources(job interface{}) *ResourceInfo {
 	return &ResourceInfo{
 		CPUCategory:    "medium",
@@ -383,13 +351,12 @@ func (ivt *ImageVersionTracker) cleanupRoutine() {
 		now := time.Now()
 		for key, data := range ivt.activeVersions {
 			if now.Sub(data.LastUpdated) > ivt.maxAge {
-				// Decrement counters before removal
 				if ivt.topVersions[data.Version] > 0 {
 					ivt.topVersions[data.Version]--
 					TrainingOperatorImageVersionUsage.WithLabelValues(data.Version).Dec()
 				}
 				delete(ivt.activeVersions, key)
-				klog.V(4).Infof("Cleaned up stale job tracking: %s", key)
+				klog.V(4).InfoS("Cleaned up stale job tracking", "key", key)
 			}
 		}
 		ivt.mu.Unlock()

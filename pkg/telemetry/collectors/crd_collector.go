@@ -1,43 +1,32 @@
 // pkg/telemetry/collectors/crd_collector.go
-// CRD instance tracking collector - manages CRD lifecycle metrics
+// Bridge collector that coordinates image version tracking for deprecation decisions
 package collectors
 
 import (
 	"context"
+	"strings"
 	"sync"
-	"time"
 
-	"github.com/kubeflow/training-operator/pkg/telemetry/analysis"
-	"github.com/kubeflow/training-operator/pkg/telemetry/config"
-	"github.com/kubeflow/training-operator/pkg/telemetry/events"
+	kubeflowv1 "github.com/kubeflow/training-operator/pkg/apis/kubeflow.org/v1"
+	"github.com/kubeflow/training-operator/pkg/telemetry/analyzers"
 	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 	"k8s.io/klog/v2"
 )
 
-// CRDCollector manages CRD instance tracking and metrics
+// CRDCollector bridges events to the metric tracking system
 type CRDCollector struct {
-	mu              sync.RWMutex
-	activeInstances map[string]*CRDInstanceData
-	customerCache   map[string]*events.CustomerInfo
-	
-	// Configuration
-	maxEntries      int
-	maxAge          time.Duration
-	cleanupInterval time.Duration
-	
-	// Internal state
-	initialized     bool
+	initialized bool
+	mu          sync.RWMutex
 }
 
-// CRDInstanceData represents an active CRD instance
-type CRDInstanceData struct {
-	InstanceKey      string
-	Framework        string
-	Namespace        string
-	Name             string
-	CustomerType     string
-	CreatedAt        time.Time
-	LastUpdated      time.Duration
+// JobEventData represents job event information
+type JobEventData struct {
+	EventType    string
+	Framework    string
+	Job          interface{}
+	JobName      string
+	JobNamespace string
+	Metadata     map[string]string
 }
 
 var (
@@ -45,24 +34,17 @@ var (
 	crdOnce      sync.Once
 )
 
-// InitializeCRDCollector sets up the CRD instance collector
+// InitializeCRDCollector sets up the CRD collector
 func InitializeCRDCollector() *CRDCollector {
 	crdOnce.Do(func() {
-		cfg := config.Get()
-		
 		crdCollector = &CRDCollector{
-			activeInstances: make(map[string]*CRDInstanceData),
-			customerCache:   make(map[string]*events.CustomerInfo),
-			maxEntries:      cfg.MaxEntries,
-			maxAge:          cfg.MaxEntryAge,
-			cleanupInterval: cfg.CleanupInterval,
-			initialized:     true,
+			initialized: true,
 		}
-		
-		// Start cleanup routine
-		go crdCollector.startCleanupRoutine()
-		
-		klog.Info("CRD collector initialized")
+
+		// Initialize the metrics system
+		metrics.InitializeMetrics()
+
+		klog.Info("CRD collector initialized for image version tracking")
 	})
 	return crdCollector
 }
@@ -75,182 +57,247 @@ func GetCRDCollector() *CRDCollector {
 	return crdCollector
 }
 
-// ProcessJobCreation handles job creation events
-func (c *CRDCollector) ProcessJobCreation(ctx context.Context, event events.JobEventData) error {
+// Initialize initializes all collectors (for backward compatibility)
+func Initialize() error {
+	InitializeCRDCollector()
+	return nil
+}
+
+// ProcessJobCreation handles job creation events for version tracking
+func (c *CRDCollector) ProcessJobCreation(ctx context.Context, event JobEventData) error {
 	if !c.initialized {
+		klog.Warning("CRD collector not initialized")
 		return nil
 	}
-	
-	// Analyze customer information
-	customerInfo := analysis.ClassifyCustomer(event.JobNamespace, event.Job)
-	if customerInfo == nil {
-		klog.Warning("Failed to classify customer, using default")
-		customerInfo = &events.CustomerInfo{CustomerType: "non-enterprise"}
+
+	// Extract container image for version analysis
+	image := c.extractContainerImage(event.Job, event.Framework)
+	if image == "" {
+		klog.V(3).Infof("Could not extract image for job %s/%s", event.JobNamespace, event.JobName)
+		image = "unknown"
 	}
-	
-	// Generate instance key
-	instanceKey := c.generateInstanceKey(event)
-	
-	// Track the instance
-	c.trackInstance(instanceKey, event.Framework, event.JobNamespace, event.JobName, customerInfo.CustomerType)
-	
-	// Update metrics
-	c.updateMetricsForCreation(event.Framework, customerInfo.CustomerType)
-	
+
+	// Analyze image to determine version and source
+	imageAnalysis := analyzers.AnalyzeContainerImage(image)
+
+	// Classify customer type for adoption tracking
+	customerInfo := metrics.ClassifyCustomer(event.JobNamespace, event.Job)
+
+	// Record job creation with image version tracking
+	// This is the key for deprecation decisions
+	metrics.RecordJobCreation(
+		event.Framework,
+		imageAnalysis.RHOAIVersion, // e.g., "pytorch-2.4", "tensorflow-2.15"
+		imageAnalysis.ImageSource,  // "rhoai_official", "community", "custom"
+		customerInfo.CustomerType,  // "enterprise" or "non-enterprise"
+		event.JobNamespace,
+		event.JobName,
+	)
+
+	klog.V(2).Infof("Tracked job creation: %s/%s - version: %s, source: %s, customer: %s",
+		event.JobNamespace, event.JobName,
+		imageAnalysis.RHOAIVersion, imageAnalysis.ImageSource, customerInfo.CustomerType)
+
 	return nil
 }
 
 // ProcessJobDeletion handles job deletion events
-func (c *CRDCollector) ProcessJobDeletion(ctx context.Context, event events.JobEventData) error {
+func (c *CRDCollector) ProcessJobDeletion(ctx context.Context, event JobEventData) error {
 	if !c.initialized {
 		return nil
 	}
-	
-	instanceKey := c.generateInstanceKey(event)
-	
-	// Remove from tracking
-	c.removeInstance(instanceKey)
-	
+
+	// Extract image to determine version for cleanup
+	image := c.extractContainerImage(event.Job, event.Framework)
+	if image != "" {
+		imageAnalysis := analyzers.AnalyzeContainerImage(image)
+
+		// Record job deletion to update version tracking
+		metrics.RecordJobDeletion(
+			event.Framework,
+			imageAnalysis.RHOAIVersion,
+			event.JobNamespace,
+			event.JobName,
+		)
+
+		klog.V(3).Infof("Tracked job deletion: %s/%s - version: %s",
+			event.JobNamespace, event.JobName, imageAnalysis.RHOAIVersion)
+	}
+
 	return nil
 }
 
-// trackInstance adds or updates an instance in the tracking map
-func (c *CRDCollector) trackInstance(instanceKey, framework, namespace, name, customerType string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	// Prevent unbounded growth
-	if len(c.activeInstances) >= c.maxEntries {
-		c.removeOldestInstanceLocked()
+// ProcessJobCompletion handles job completion events (for future use)
+func (c *CRDCollector) ProcessJobCompletion(ctx context.Context, event JobEventData, succeeded bool) error {
+	// Currently not tracking completion metrics, but kept for interface compatibility
+	status := "failed"
+	if succeeded {
+		status = "succeeded"
 	}
-	
-	instance := &CRDInstanceData{
-		InstanceKey:  instanceKey,
-		Framework:    framework,
-		Namespace:    namespace,
-		Name:         name,
-		CustomerType: customerType,
-		CreatedAt:    time.Now(),
-		LastUpdated:  0,
-	}
-	
-	c.activeInstances[instanceKey] = instance
+
+	klog.V(4).Infof("Job %s/%s completed with status: %s",
+		event.JobNamespace, event.JobName, status)
+
+	return nil
 }
 
-// removeInstance removes an instance from tracking
-func (c *CRDCollector) removeInstance(instanceKey string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	if instance, exists := c.activeInstances[instanceKey]; exists {
-		// Update metrics before removal
-		c.updateMetricsForDeletion(instance.Framework, instance.CustomerType)
-		delete(c.activeInstances, instanceKey)
+// ProcessJobStart handles job start events (for future use)
+func (c *CRDCollector) ProcessJobStart(ctx context.Context, event JobEventData) error {
+	// Currently not tracking start events, but kept for interface compatibility
+	klog.V(4).Infof("Job %s/%s started", event.JobNamespace, event.JobName)
+	return nil
+}
+
+// extractContainerImage extracts the container image from various job types
+func (c *CRDCollector) extractContainerImage(job interface{}, framework string) string {
+	frameworkLower := strings.ToLower(framework)
+
+	switch frameworkLower {
+	case "pytorch":
+		return c.extractPyTorchImage(job)
+	case "tensorflow":
+		return c.extractTensorFlowImage(job)
+	case "mpi":
+		return c.extractMPIImage(job)
+	case "xgboost":
+		return c.extractXGBoostImage(job)
+	case "paddle":
+		return c.extractPaddleImage(job)
+	case "jax":
+		return c.extractJAXImage(job)
+	default:
+		klog.V(4).Infof("Unknown framework for image extraction: %s", framework)
+		return ""
 	}
 }
 
-// updateMetricsForCreation updates metrics when an instance is created
-func (c *CRDCollector) updateMetricsForCreation(framework, customerType string) {
-	metricsRegistry := metrics.Get()
-	if metricsRegistry == nil {
-		return
+// extractPyTorchImage extracts image from PyTorchJob
+func (c *CRDCollector) extractPyTorchImage(job interface{}) string {
+	pytorchJob, ok := job.(*kubeflowv1.PyTorchJob)
+	if !ok {
+		return ""
 	}
-	
-	// Update active instances gauge
-	metricsRegistry.CRDInstancesActive.WithLabelValues(framework, customerType).Inc()
-	
-	// Update customer usage counter
-	metricsRegistry.CustomerUsage.WithLabelValues(customerType).Inc()
-	
-	// Update framework adoption counter
-	metricsRegistry.FrameworkAdoption.WithLabelValues(framework).Inc()
-}
 
-// updateMetricsForDeletion updates metrics when an instance is deleted
-func (c *CRDCollector) updateMetricsForDeletion(framework, customerType string) {
-	metricsRegistry := metrics.Get()
-	if metricsRegistry == nil {
-		return
-	}
-	
-	// Decrease active instances gauge
-	metricsRegistry.CRDInstancesActive.WithLabelValues(framework, customerType).Dec()
-}
-
-// generateInstanceKey creates a unique key for tracking instances
-func (c *CRDCollector) generateInstanceKey(event events.JobEventData) string {
-	return event.Framework + "/" + event.JobNamespace + "/" + event.JobName
-}
-
-// removeOldestInstanceLocked removes the oldest instance (must be called with lock held)
-func (c *CRDCollector) removeOldestInstanceLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	
-	for key, instance := range c.activeInstances {
-		if oldestKey == "" || instance.CreatedAt.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = instance.CreatedAt
+	if pytorchJob.Spec.PyTorchReplicaSpecs != nil {
+		// Try Master first, then Worker
+		for _, replicaType := range []kubeflowv1.ReplicaType{
+			kubeflowv1.PyTorchJobReplicaTypeMaster,
+			kubeflowv1.PyTorchJobReplicaTypeWorker,
+		} {
+			if replica, ok := pytorchJob.Spec.PyTorchReplicaSpecs[replicaType]; ok {
+				if len(replica.Template.Spec.Containers) > 0 {
+					return replica.Template.Spec.Containers[0].Image
+				}
+			}
 		}
 	}
-	
-	if oldestKey != "" {
-		instance := c.activeInstances[oldestKey]
-		c.updateMetricsForDeletion(instance.Framework, instance.CustomerType)
-		delete(c.activeInstances, oldestKey)
-	}
+	return ""
 }
 
-// startCleanupRoutine starts the background cleanup process
-func (c *CRDCollector) startCleanupRoutine() {
-	ticker := time.NewTicker(c.cleanupInterval)
-	defer ticker.Stop()
-	
-	for range ticker.C {
-		c.cleanup()
+// extractTensorFlowImage extracts image from TFJob
+func (c *CRDCollector) extractTensorFlowImage(job interface{}) string {
+	tfJob, ok := job.(*kubeflowv1.TFJob)
+	if !ok {
+		return ""
 	}
-}
 
-// cleanup removes old instances and customer cache entries
-func (c *CRDCollector) cleanup() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	now := time.Now()
-	
-	// Clean up old instances
-	for key, instance := range c.activeInstances {
-		if now.Sub(instance.CreatedAt) > c.maxAge {
-			c.updateMetricsForDeletion(instance.Framework, instance.CustomerType)
-			delete(c.activeInstances, key)
+	if tfJob.Spec.TFReplicaSpecs != nil {
+		// Try Chief first, then Worker
+		for _, replicaType := range []kubeflowv1.ReplicaType{
+			kubeflowv1.TFJobReplicaTypeChief,
+			kubeflowv1.TFJobReplicaTypeWorker,
+		} {
+			if replica, ok := tfJob.Spec.TFReplicaSpecs[replicaType]; ok {
+				if len(replica.Template.Spec.Containers) > 0 {
+					return replica.Template.Spec.Containers[0].Image
+				}
+			}
 		}
 	}
-	
-	// Clean up old customer cache entries
-	for namespace, customerInfo := range c.customerCache {
-		// Check if customer info is old (assuming TenantHints[0] contains timestamp)
-		if len(customerInfo.TenantHints) > 0 {
-			// This is a simplified cleanup - in practice you'd store timestamps properly
-			delete(c.customerCache, namespace)
-		}
-	}
+	return ""
 }
 
-// GetActiveInstanceCount returns the current number of active instances
+// extractMPIImage extracts image from MPIJob
+func (c *CRDCollector) extractMPIImage(job interface{}) string {
+	mpiJob, ok := job.(*kubeflowv1.MPIJob)
+	if !ok {
+		return ""
+	}
+
+	if mpiJob.Spec.MPIReplicaSpecs != nil {
+		if launcher, ok := mpiJob.Spec.MPIReplicaSpecs[kubeflowv1.MPIJobReplicaTypeLauncher]; ok {
+			if len(launcher.Template.Spec.Containers) > 0 {
+				return launcher.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+// extractXGBoostImage extracts image from XGBoostJob
+func (c *CRDCollector) extractXGBoostImage(job interface{}) string {
+	xgboostJob, ok := job.(*kubeflowv1.XGBoostJob)
+	if !ok {
+		return ""
+	}
+
+	if xgboostJob.Spec.XGBReplicaSpecs != nil {
+		if master, ok := xgboostJob.Spec.XGBReplicaSpecs[kubeflowv1.XGBoostJobReplicaTypeMaster]; ok {
+			if len(master.Template.Spec.Containers) > 0 {
+				return master.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+// extractPaddleImage extracts image from PaddleJob
+func (c *CRDCollector) extractPaddleImage(job interface{}) string {
+	paddleJob, ok := job.(*kubeflowv1.PaddleJob)
+	if !ok {
+		return ""
+	}
+
+	if paddleJob.Spec.PaddleReplicaSpecs != nil {
+		if master, ok := paddleJob.Spec.PaddleReplicaSpecs[kubeflowv1.PaddleJobReplicaTypeMaster]; ok {
+			if len(master.Template.Spec.Containers) > 0 {
+				return master.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+// extractJAXImage extracts image from JAXJob
+func (c *CRDCollector) extractJAXImage(job interface{}) string {
+	jaxJob, ok := job.(*kubeflowv1.JAXJob)
+	if !ok {
+		return ""
+	}
+
+	if jaxJob.Spec.JAXReplicaSpecs != nil {
+		if worker, ok := jaxJob.Spec.JAXReplicaSpecs[kubeflowv1.JAXJobReplicaTypeWorker]; ok {
+			if len(worker.Template.Spec.Containers) > 0 {
+				return worker.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+// GetActiveInstanceCount returns the number of active jobs being tracked
 func (c *CRDCollector) GetActiveInstanceCount() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.activeInstances)
+	// Delegate to metric_definitions.go
+	return metrics.GetActiveJobCount()
 }
 
-// GetActiveInstancesByFramework returns active instances grouped by framework
+// GetActiveInstancesByFramework returns version distribution
 func (c *CRDCollector) GetActiveInstancesByFramework() map[string]int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	counts := make(map[string]int)
-	for _, instance := range c.activeInstances {
-		counts[instance.Framework]++
-	}
-	return counts
+	// Delegate to metric_definitions.go
+	return metrics.GetVersionDistribution()
+}
+
+// GetMetricsSummary returns a summary of all metrics
+func (c *CRDCollector) GetMetricsSummary() map[string]interface{} {
+	return metrics.GetMetricsSummary()
 }

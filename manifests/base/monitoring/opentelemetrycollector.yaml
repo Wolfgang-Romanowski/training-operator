@@ -152,26 +152,29 @@ spec:
         send_batch_size: 1000
         timeout: 10s
       
-      # TELEMETRY FILTER: Red Hat compliant metrics only (3 metrics maximum)
+      # TELEMETRY FILTER: Red Hat compliant metrics only (3 metrics, 10 timeseries max)
       filter/telemetry:
         metrics:
           include:
             match_type: regexp
             metric_names:
-            - "^training_operator_crd_instances_active$"
-            - "^training_operator_customer_usage_total$"
-            - "^training_operator_framework_adoption_total$"
-            - "^openshift:training_.*"  # Recording rules only
+            # Business-focused metrics (10 timeseries total)
+            - "^training_operator_image_version_usage$"           # 5 timeseries
+            - "^training_operator_image_source_preference_total$" # 3 timeseries
+            - "^training_operator_enterprise_adoption_total$"     # 2 timeseries
+            # Recording rules
+            - "^openshift:training_.*"
       
-      # Cardinality reduction for telemetry
+      # Enhanced cardinality reduction for telemetry
       transform/telemetry:
         metric_statements:
         - context: metric
           statements:
-          # Remove high-cardinality labels
-          - delete_label_values(pod) where name == "training_jobs_by_image_version_total"
-          - delete_label_values(instance) where name == "training_runtime_preference_total"
-          - delete_label_values(endpoint) where name == "training_framework_accelerator_usage_total"
+          # Remove all unnecessary high-cardinality labels
+          - delete_key(resource.attributes, ["pod", "instance", "job", "endpoint", "container", "service", "namespace"])
+          - delete_key(attributes, ["pod", "instance", "job", "endpoint", "container", "service", "namespace"])
+          # Keep only essential business labels
+          - keep_keys(attributes, ["version", "image_source", "customer_type"])
       
       # Resource detection
       resourcedetection:

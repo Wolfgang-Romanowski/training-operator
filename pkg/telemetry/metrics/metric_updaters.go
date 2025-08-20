@@ -1,43 +1,61 @@
 // pkg/telemetry/metrics/metric_updaters.go
+// Helper functions for updating business-focused metrics
 package metrics
 
 import (
-	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/klog/v2"
 )
 
-// UpdateImageSourceMetric updates the image source counter
-func UpdateImageSourceMetric(framework, imageSource, rhoaiVersion string) {
-	// Only track image source for cardinality control
-	TrainingJobsByImageSource.WithLabelValues(imageSource).Inc()
+// RecordImageVersionUsage records a job using a specific image version
+func RecordImageVersionUsage(version string) {
+	if !IsInitialized() {
+		EnsureInitialized()
+	}
+
+	TrainingOperatorImageVersionUsage.WithLabelValues(version).Inc()
+	klog.V(4).Infof("Recorded image version usage: %s", version)
 }
 
-// IncrementActiveJobs increments active job count
-func IncrementActiveJobs(framework string) {
-	TrainingJobsActive.WithLabelValues(framework).Inc()
+// RecordImageSourcePreference records customer preference for image source
+func RecordImageSourcePreference(imageSource string) {
+	if !IsInitialized() {
+		EnsureInitialized()
+	}
+
+	TrainingOperatorImageSourcePreference.WithLabelValues(imageSource).Inc()
+	klog.V(4).Infof("Recorded image source preference: %s", imageSource)
 }
 
-// DecrementActiveJobs decrements active job count
-func DecrementActiveJobs(framework string) {
-	// Ensure we don't go negative
-	TrainingJobsActive.WithLabelValues(framework).Dec()
-}
+// RecordEnterpriseAdoption records enterprise adoption patterns
+func RecordEnterpriseAdoption(customerType string) {
+	if !IsInitialized() {
+		EnsureInitialized()
+	}
 
-// RecordJobCreated records job creation
-func RecordJobCreated(framework string) {
-	TrainingJobsCreated.WithLabelValues(framework).Inc()
-}
-
-// RecordJobCompletion records job completion with status
-func RecordJobCompletion(framework, status string) {
-	TrainingJobsCompleted.WithLabelValues(status).Inc()
+	TrainingOperatorEnterpriseAdoption.WithLabelValues(customerType).Inc()
+	klog.V(4).Infof("Recorded enterprise adoption: %s", customerType)
 }
 
 // RecordReconcileError records reconciliation errors
 func RecordReconcileError(controller string) {
-	ReconcileErrors.WithLabelValues(controller).Inc()
+	reg := Get()
+	if reg != nil && reg.ReconcileErrors != nil {
+		reg.ReconcileErrors.WithLabelValues(controller).Inc()
+	}
 }
 
 // RecordReconcileDuration records reconciliation duration
 func RecordReconcileDuration(controller string, duration float64) {
-	ReconcileDuration.WithLabelValues(controller).Observe(duration)
+	reg := Get()
+	if reg != nil && reg.ReconcileDuration != nil {
+		reg.ReconcileDuration.WithLabelValues(controller).Observe(duration)
+	}
+}
+
+// RecordInternalFailure records internal failures for debugging
+func RecordInternalFailure(component, reason string) {
+	reg := Get()
+	if reg != nil && reg.InternalFailures != nil {
+		reg.InternalFailures.WithLabelValues(component, reason).Inc()
+	}
 }

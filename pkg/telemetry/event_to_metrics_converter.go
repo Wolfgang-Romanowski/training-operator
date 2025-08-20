@@ -1,464 +1,242 @@
 // pkg/telemetry/event_to_metrics_converter.go
+// FIXED: Properly tracks image versions with 10 timeseries limit compliance
 package telemetry
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
 	kubeflowv1 "github.com/kubeflow/training-operator/pkg/apis/kubeflow.org/v1"
 	"github.com/kubeflow/training-operator/pkg/telemetry/analyzers"
 	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
 
-// JobDetails contains extracted job information
-type JobDetails struct {
-	Name             string
-	Namespace        string
-	Framework        string
-	ImageSource      string
-	RHOAIVersion     string
-	AcceleratorType  string
-	AcceleratorCount float64
-	IsKueueManaged   bool
-	KueueName        string
-	StartTime        *metav1.Time
-	CompletionTime   *metav1.Time
-}
-
-// JobKey returns a unique identifier for the job
-func (d JobDetails) JobKey() string {
-	return fmt.Sprintf("%s/%s/%s", d.Framework, d.Namespace, d.Name)
-}
-
-// convertEventToMetrics is the main entry point with panic recovery
+// convertEventToMetrics is the main entry point for event processing
 func convertEventToMetrics(ctx context.Context, event JobEventData) {
-	// Critical: Recover from panics to prevent controller crashes
-	defer func() {
-		if r := recover(); r != nil {
-			klog.Errorf("Panic in telemetry converter: %v", r)
-			metrics.ReconcileErrors.WithLabelValues("telemetry_converter").Inc()
-		}
-	}()
-
-	// Extract job details based on framework
-	details := extractJobDetails(event.Job, event.Framework)
-	if details == nil {
-		klog.V(4).Infof("Could not extract job details for framework %s", event.Framework)
+	if !isTelemetryEnabled() {
 		return
 	}
 
-	// Validate to prevent cardinality explosion
-	if err := validateJobDetails(details); err != nil {
-		klog.Warningf("Invalid job details: %v", err)
-		return
-	}
+	// Add timeout protection
+	processCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-	// Process event based on type
 	switch event.EventType {
 	case JobCreatedEvent:
-		recordJobCreationMetrics(*details)
-		recordCRDInstanceCreation(*details, event.Job) // Add CRD instance tracking
+		convertJobCreatedToMetrics(processCtx, event)
 	case JobStartedEvent:
-		recordJobStartedMetrics(*details)
-		recordCRDInstanceStatusUpdate(*details, "running") // Track status change
+		klog.V(4).Infof("Job started: %s/%s", event.JobNamespace, event.JobName)
 	case JobCompletedEvent:
-		recordJobCompletionMetrics(*details, true)
-		recordCRDInstanceStatusUpdate(*details, "completed") // Track completion
+		convertJobCompletedToMetrics(processCtx, event, true)
 	case JobFailedEvent:
-		recordJobFailureMetrics(*details, event.Metadata["reason"])
-		recordCRDInstanceStatusUpdate(*details, "failed") // Track failure
+		convertJobCompletedToMetrics(processCtx, event, false)
 	case JobDeletedEvent:
-		recordJobDeletionMetrics(*details)
-		recordCRDInstanceDeletion(*details) // Track deletion
-	}
-}
-
-// extractJobDetails extracts common details from different job types
-func extractJobDetails(job interface{}, framework string) *JobDetails {
-	switch framework {
-	case "pytorch":
-		return extractPyTorchJobDetails(job)
-	case "tensorflow":
-		return extractTFJobDetails(job)
-	case "mpi":
-		return extractMPIJobDetails(job)
-	case "xgboost":
-		return extractXGBoostJobDetails(job)
-	case "jax":
-		return extractJAXJobDetails(job)
+		convertJobDeletedToMetrics(processCtx, event)
 	default:
-		return nil
+		klog.V(4).Infof("Unknown event type: %s", event.EventType)
 	}
 }
 
-// extractPyTorchJobDetails extracts details from PyTorchJob
-func extractPyTorchJobDetails(job interface{}) *JobDetails {
-	pytorchJob, ok := job.(*kubeflowv1.PyTorchJob)
+// convertJobCreatedToMetrics handles job creation events with 10 timeseries limit
+func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
+	// Extract job metadata
+	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
-		return nil
+		klog.Warning("Job does not implement metav1.Object")
+		return
 	}
 
-	details := &JobDetails{
-		Name:           pytorchJob.Name,
-		Namespace:      pytorchJob.Namespace,
-		Framework:      "pytorch",
-		StartTime:      pytorchJob.Status.StartTime,
-		CompletionTime: pytorchJob.Status.CompletionTime,
-	}
+	namespace := metaObj.GetNamespace()
+	name := metaObj.GetName()
+	framework := strings.ToLower(event.Framework)
 
-	// Analyze container image from Master replica
-	if master, ok := pytorchJob.Spec.PyTorchReplicaSpecs[kubeflowv1.PyTorchJobReplicaTypeMaster]; ok {
-		if len(master.Template.Spec.Containers) > 0 {
-			image := master.Template.Spec.Containers[0].Image
-			analysis := analyzers.AnalyzeContainerImage(image)
-			details.ImageSource = analysis.ImageSource
-			details.RHOAIVersion = analysis.RHOAIVersion
-			details.AcceleratorType = analysis.AcceleratorType
+	// Analyze customer type (binary classification for compliance)
+	customerInfo := classifyCustomerUsage(namespace, event.Job)
+	customerType := "non-enterprise"
+	if customerInfo != nil {
+		// Strict binary classification to keep under 10 timeseries
+		if strings.Contains(strings.ToLower(customerInfo.CustomerType), "enterprise") ||
+			strings.Contains(strings.ToLower(customerInfo.CustomerType), "prod") ||
+			strings.Contains(strings.ToLower(namespace), "prod") {
+			customerType = "enterprise"
 		}
 	}
 
-	// Check for Kueue integration
-	if pytorchJob.Annotations != nil {
-		if workload, ok := pytorchJob.Annotations["kueue.x-k8s.io/workload"]; ok && workload != "" {
-			details.IsKueueManaged = true
-			details.KueueName = pytorchJob.Annotations["kueue.x-k8s.io/queue-name"]
-			if details.KueueName == "" {
-				details.KueueName = "default"
-			}
-		}
+	// Extract and analyze container image
+	image := extractContainerImage(event.Job, framework)
+	if image == "" {
+		klog.V(3).Infof("Could not extract image for job %s/%s", namespace, name)
+		image = "unknown"
 	}
 
-	// Count accelerators
-	details.AcceleratorCount = countAccelerators(pytorchJob.Spec.PyTorchReplicaSpecs)
+	imageAnalysis := analyzers.AnalyzeContainerImage(image)
 
-	return details
+	// Track metrics with strict cardinality limits
+	// Total must not exceed 10 timeseries across all metrics
+	metrics.TrackImageVersion(
+		framework,
+		imageAnalysis.RHOAIVersion,
+		imageAnalysis.ImageSource,
+		customerType,
+		namespace,
+		name,
+	)
+
+	klog.V(2).Infof("Job %s/%s created - Framework: %s, Version: %s, Source: %s, Customer: %s",
+		namespace, name, framework, imageAnalysis.RHOAIVersion,
+		imageAnalysis.ImageSource, customerType)
 }
 
-// extractTFJobDetails extracts details from TFJob
-func extractTFJobDetails(job interface{}) *JobDetails {
-	tfJob, ok := job.(*kubeflowv1.TFJob)
+// convertJobCompletedToMetrics handles job completion events
+func convertJobCompletedToMetrics(ctx context.Context, event JobEventData, succeeded bool) {
+	metaObj, ok := event.Job.(metav1.Object)
 	if !ok {
-		return nil
+		return
 	}
 
-	details := &JobDetails{
-		Name:           tfJob.Name,
-		Namespace:      tfJob.Namespace,
-		Framework:      "tensorflow",
-		StartTime:      tfJob.Status.StartTime,
-		CompletionTime: tfJob.Status.CompletionTime,
-	}
+	namespace := metaObj.GetNamespace()
+	name := metaObj.GetName()
 
-	// Analyze container image from Chief replica
-	if chief, ok := tfJob.Spec.TFReplicaSpecs[kubeflowv1.TFJobReplicaTypeChief]; ok {
-		if len(chief.Template.Spec.Containers) > 0 {
-			image := chief.Template.Spec.Containers[0].Image
-			analysis := analyzers.AnalyzeContainerImage(image)
-			details.ImageSource = analysis.ImageSource
-			details.RHOAIVersion = analysis.RHOAIVersion
-			details.AcceleratorType = analysis.AcceleratorType
-		}
-	} else if worker, ok := tfJob.Spec.TFReplicaSpecs[kubeflowv1.TFJobReplicaTypeWorker]; ok {
-		if len(worker.Template.Spec.Containers) > 0 {
-			image := worker.Template.Spec.Containers[0].Image
-			analysis := analyzers.AnalyzeContainerImage(image)
-			details.ImageSource = analysis.ImageSource
-			details.RHOAIVersion = analysis.RHOAIVersion
-			details.AcceleratorType = analysis.AcceleratorType
-		}
-	}
-
-	// Check for Kueue integration
-	if tfJob.Annotations != nil {
-		if workload, ok := tfJob.Annotations["kueue.x-k8s.io/workload"]; ok && workload != "" {
-			details.IsKueueManaged = true
-			details.KueueName = tfJob.Annotations["kueue.x-k8s.io/queue-name"]
-			if details.KueueName == "" {
-				details.KueueName = "default"
-			}
-		}
-	}
-
-	return details
-}
-
-// Similar extractors for other job types...
-func extractMPIJobDetails(job interface{}) *JobDetails {
-	mpiJob, ok := job.(*kubeflowv1.MPIJob)
-	if !ok {
-		return nil
-	}
-
-	details := &JobDetails{
-		Name:           mpiJob.Name,
-		Namespace:      mpiJob.Namespace,
-		Framework:      "mpi",
-		StartTime:      mpiJob.Status.StartTime,
-		CompletionTime: mpiJob.Status.CompletionTime,
-	}
-
-	if launcher, ok := mpiJob.Spec.MPIReplicaSpecs[kubeflowv1.MPIJobReplicaTypeLauncher]; ok {
-		if len(launcher.Template.Spec.Containers) > 0 {
-			image := launcher.Template.Spec.Containers[0].Image
-			analysis := analyzers.AnalyzeContainerImage(image)
-			details.ImageSource = analysis.ImageSource
-			details.RHOAIVersion = analysis.RHOAIVersion
-			details.AcceleratorType = analysis.AcceleratorType
-		}
-	}
-
-	return details
-}
-
-func extractXGBoostJobDetails(job interface{}) *JobDetails {
-	xgboostJob, ok := job.(*kubeflowv1.XGBoostJob)
-	if !ok {
-		return nil
-	}
-
-	details := &JobDetails{
-		Name:           xgboostJob.Name,
-		Namespace:      xgboostJob.Namespace,
-		Framework:      "xgboost",
-		StartTime:      xgboostJob.Status.StartTime,
-		CompletionTime: xgboostJob.Status.CompletionTime,
-	}
-
-	if master, ok := xgboostJob.Spec.XGBReplicaSpecs[kubeflowv1.XGBoostJobReplicaTypeMaster]; ok {
-		if len(master.Template.Spec.Containers) > 0 {
-			image := master.Template.Spec.Containers[0].Image
-			analysis := analyzers.AnalyzeContainerImage(image)
-			details.ImageSource = analysis.ImageSource
-			details.RHOAIVersion = analysis.RHOAIVersion
-			details.AcceleratorType = analysis.AcceleratorType
-		}
-	}
-
-	return details
-}
-
-func extractJAXJobDetails(job interface{}) *JobDetails {
-	jaxJob, ok := job.(*kubeflowv1.JAXJob)
-	if !ok {
-		return nil
-	}
-
-	details := &JobDetails{
-		Name:           jaxJob.Name,
-		Namespace:      jaxJob.Namespace,
-		Framework:      "jax",
-		StartTime:      jaxJob.Status.StartTime,
-		CompletionTime: jaxJob.Status.CompletionTime,
-	}
-
-	if worker, ok := jaxJob.Spec.JAXReplicaSpecs[kubeflowv1.JAXJobReplicaTypeWorker]; ok {
-		if len(worker.Template.Spec.Containers) > 0 {
-			image := worker.Template.Spec.Containers[0].Image
-			analysis := analyzers.AnalyzeContainerImage(image)
-			details.ImageSource = analysis.ImageSource
-			details.RHOAIVersion = analysis.RHOAIVersion
-			details.AcceleratorType = analysis.AcceleratorType
-		}
-	}
-
-	return details
-}
-
-// validateJobDetails validates job details to prevent cardinality explosion
-func validateJobDetails(details *JobDetails) error {
-	// Limit label values
-	validSources := map[string]bool{
-		"rhoai_official": true,
-		"community":      true,
-		"custom":         true,
-		"unknown":        true,
-	}
-
-	if !validSources[details.ImageSource] {
-		details.ImageSource = "unknown"
-	}
-
-	// Limit framework values
-	validFrameworks := map[string]bool{
-		"pytorch":    true,
-		"tensorflow": true,
-		"mpi":        true,
-		"xgboost":    true,
-		"jax":        true,
-		"paddle":     true,
-	}
-
-	if !validFrameworks[details.Framework] {
-		return fmt.Errorf("invalid framework: %s", details.Framework)
-	}
-
-	return nil
-}
-
-// recordJobCreationMetrics records customer-focused metrics when a job is created
-func recordJobCreationMetrics(details JobDetails) {
-	// METRIC 1: Image Version Distribution (for deprecation decisions)
-	// Answers: "Can we deprecate PyTorch 2.4 as customers migrate to 2.5?"
-	metrics.TrainingJobsByImageVersion.WithLabelValues(
-		details.Framework,
-		details.ImageSource,
-		details.RHOAIVersion,
-	).Inc()
-	
-	// METRIC 2: Runtime Preference Analysis  
-	// Answers: "Do customers prefer RHOAI vs community/custom images?"
-	metrics.TrainingRuntimePreference.WithLabelValues(details.ImageSource).Inc()
-	
-	// METRIC 3: Framework + Accelerator Usage (for capacity planning)
-	// Answers: "Which combinations are most popular for hardware procurement?"
-	metrics.TrainingFrameworkAcceleratorUsage.WithLabelValues(
-		details.Framework,
-		details.AcceleratorType,
-	).Inc()
-	
-	// Track start time for internal metrics only
-	metrics.RecordJobStart(details.JobKey())
-}
-
-// recordJobStartedMetrics records metrics when a job starts running
-func recordJobStartedMetrics(details JobDetails) {
-	// Job is already tracked from creation
-	if _, exists := metrics.GetJobStartTime(details.JobKey()); !exists {
-		metrics.RecordJobStart(details.JobKey())
-	}
-}
-
-// recordJobCompletionMetrics records metrics when a job completes
-func recordJobCompletionMetrics(details JobDetails, succeeded bool) {
 	status := "failed"
 	if succeeded {
 		status = "succeeded"
 	}
 
-	// Update completion counter
-	metrics.TrainingJobsCompleted.WithLabelValues(status).Inc()
-
-	// Decrement active jobs
-	metrics.TrainingJobsActive.WithLabelValues(details.Framework).Dec()
-
-	// Clean up tracking
-	metrics.RemoveJobTracking(details.JobKey())
+	klog.V(3).Infof("Job %s/%s completed with status: %s", namespace, name, status)
 }
 
-// recordJobFailureMetrics records metrics when a job fails
-func recordJobFailureMetrics(details JobDetails, reason string) {
-	// Record as failed completion
-	recordJobCompletionMetrics(details, false)
-
-	// Classify failure for internal tracking (not exported to telemetry)
-	classifiedReason := classifyFailureReason(reason)
-	metrics.internalFailureReasons.WithLabelValues(details.Framework, classifiedReason).Inc()
-}
-
-// recordJobDeletionMetrics records metrics when a job is deleted
-func recordJobDeletionMetrics(details JobDetails) {
-	// Decrement active jobs if still active
-	metrics.TrainingJobsActive.WithLabelValues(details.Framework).Dec()
-
-	// Clean up all tracking (CRITICAL: prevents memory leak)
-	metrics.RemoveJobTracking(details.JobKey())
-}
-
-// classifyFailureReason categorizes failure reasons
-func classifyFailureReason(reason string) string {
-	if reason == "" {
-		return "unknown"
+// convertJobDeletedToMetrics handles job deletion events
+func convertJobDeletedToMetrics(ctx context.Context, event JobEventData) {
+	metaObj, ok := event.Job.(metav1.Object)
+	if !ok {
+		return
 	}
 
-	reasonLower := strings.ToLower(reason)
+	namespace := metaObj.GetNamespace()
+	name := metaObj.GetName()
+	framework := strings.ToLower(event.Framework)
 
-	switch {
-	case strings.Contains(reasonLower, "oomkilled"):
-		return "oom"
-	case strings.Contains(reasonLower, "imagepull"):
-		return "image_pull"
-	case strings.Contains(reasonLower, "insufficient"):
-		return "insufficient_resources"
-	case strings.Contains(reasonLower, "deadline"):
-		return "timeout"
-	case strings.Contains(reasonLower, "evicted"):
-		return "evicted"
-	default:
-		return "user_error"
+	// Extract image to determine version for cleanup
+	image := extractContainerImage(event.Job, framework)
+	if image != "" {
+		imageAnalysis := analyzers.AnalyzeContainerImage(image)
+		metrics.RemoveImageVersion(framework, imageAnalysis.RHOAIVersion, namespace, name)
 	}
+
+	klog.V(3).Infof("Job %s/%s deleted", namespace, name)
 }
 
-// countAccelerators counts total accelerators across all replicas
-func countAccelerators(replicaSpecs map[kubeflowv1.ReplicaType]*kubeflowv1.ReplicaSpec) float64 {
-	var total float64
-
-	for _, spec := range replicaSpecs {
-		if spec == nil || spec.Replicas == nil {
-			continue
+// extractContainerImage extracts the container image from various job types
+func extractContainerImage(job interface{}, framework string) string {
+	switch framework {
+	case "pytorch":
+		if pytorchJob, ok := job.(*kubeflowv1.PyTorchJob); ok {
+			return extractPyTorchImage(pytorchJob)
 		}
+	case "tensorflow":
+		if tfJob, ok := job.(*kubeflowv1.TFJob); ok {
+			return extractTensorFlowImage(tfJob)
+		}
+	case "mpi":
+		if mpiJob, ok := job.(*kubeflowv1.MPIJob); ok {
+			return extractMPIImage(mpiJob)
+		}
+	case "xgboost":
+		if xgboostJob, ok := job.(*kubeflowv1.XGBoostJob); ok {
+			return extractXGBoostImage(xgboostJob)
+		}
+	case "paddle":
+		if paddleJob, ok := job.(*kubeflowv1.PaddleJob); ok {
+			return extractPaddleImage(paddleJob)
+		}
+	case "jax":
+		if jaxJob, ok := job.(*kubeflowv1.JAXJob); ok {
+			return extractJAXImage(jaxJob)
+		}
+	}
 
-		replicas := float64(*spec.Replicas)
-		for _, container := range spec.Template.Spec.Containers {
-			if container.Resources.Requests != nil {
-				// Check for GPU resources
-				if gpuQty, ok := container.Resources.Requests[corev1.ResourceName("nvidia.com/gpu")]; ok {
-					total += replicas * float64(gpuQty.Value())
-				}
-				if gpuQty, ok := container.Resources.Requests[corev1.ResourceName("amd.com/gpu")]; ok {
-					total += replicas * float64(gpuQty.Value())
+	klog.V(4).Infof("Could not extract image for framework %s", framework)
+	return ""
+}
+
+// Framework-specific image extraction functions
+func extractPyTorchImage(job *kubeflowv1.PyTorchJob) string {
+	if job.Spec.PyTorchReplicaSpecs != nil {
+		// Try Master first, then Worker
+		for _, replicaType := range []kubeflowv1.ReplicaType{
+			kubeflowv1.PyTorchJobReplicaTypeMaster,
+			kubeflowv1.PyTorchJobReplicaTypeWorker,
+		} {
+			if replica, ok := job.Spec.PyTorchReplicaSpecs[replicaType]; ok {
+				if len(replica.Template.Spec.Containers) > 0 {
+					return replica.Template.Spec.Containers[0].Image
 				}
 			}
 		}
 	}
-
-	return total
+	return ""
 }
 
-// =================================================================
-// CRD INSTANCE TRACKING FUNCTIONS
-// These functions integrate with the new CRD instance tracking system
-// to provide comprehensive instance counting and customer differentiation
-// =================================================================
-
-// recordCRDInstanceCreation records creation of a CRD instance with customer analysis
-func recordCRDInstanceCreation(details JobDetails, job interface{}) {
-	// Generate instance key for tracking
-	instanceKey := fmt.Sprintf("%s/%s/%s", details.Framework, details.Namespace, details.Name)
-	
-	// Perform customer analysis to differentiate real vs test usage
-	customerInfo := classifyCustomerUsage(details.Namespace, job)
-	
-	// Analyze resource requirements for capacity planning
-	resourceInfo := analyzeJobResources(job)
-	
-	// Record CRD instance creation with comprehensive metadata
-	metrics.RecordCRDInstanceCreation(instanceKey, details.Framework, details.Namespace, details.Name, job)
-	
-	klog.V(4).Infof("Recorded CRD instance creation: %s, customer_type: %s, usage_source: %s", 
-		instanceKey, customerInfo.CustomerType, customerInfo.UsageSource)
+func extractTensorFlowImage(job *kubeflowv1.TFJob) string {
+	if job.Spec.TFReplicaSpecs != nil {
+		// Try Chief first, then Worker
+		for _, replicaType := range []kubeflowv1.ReplicaType{
+			kubeflowv1.TFJobReplicaTypeChief,
+			kubeflowv1.TFJobReplicaTypeWorker,
+		} {
+			if replica, ok := job.Spec.TFReplicaSpecs[replicaType]; ok {
+				if len(replica.Template.Spec.Containers) > 0 {
+					return replica.Template.Spec.Containers[0].Image
+				}
+			}
+		}
+	}
+	return ""
 }
 
-// recordCRDInstanceStatusUpdate records status changes for CRD instance tracking
-func recordCRDInstanceStatusUpdate(details JobDetails, newStatus string) {
-	instanceKey := fmt.Sprintf("%s/%s/%s", details.Framework, details.Namespace, details.Name)
-	
-	// Update CRD instance status in tracking system
-	metrics.RecordCRDInstanceStatusUpdate(instanceKey, newStatus)
-	
-	klog.V(4).Infof("Updated CRD instance status: %s -> %s", instanceKey, newStatus)
+func extractMPIImage(job *kubeflowv1.MPIJob) string {
+	if job.Spec.MPIReplicaSpecs != nil {
+		if launcher, ok := job.Spec.MPIReplicaSpecs[kubeflowv1.MPIJobReplicaTypeLauncher]; ok {
+			if len(launcher.Template.Spec.Containers) > 0 {
+				return launcher.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
 }
 
-// recordCRDInstanceDeletion records deletion of a CRD instance
-func recordCRDInstanceDeletion(details JobDetails) {
-	instanceKey := fmt.Sprintf("%s/%s/%s", details.Framework, details.Namespace, details.Name)
-	
-	// Record CRD instance deletion
-	metrics.RecordCRDInstanceDeletion(instanceKey)
-	
-	klog.V(4).Infof("Recorded CRD instance deletion: %s", instanceKey)
+func extractXGBoostImage(job *kubeflowv1.XGBoostJob) string {
+	if job.Spec.XGBReplicaSpecs != nil {
+		if master, ok := job.Spec.XGBReplicaSpecs[kubeflowv1.XGBoostJobReplicaTypeMaster]; ok {
+			if len(master.Template.Spec.Containers) > 0 {
+				return master.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+func extractPaddleImage(job *kubeflowv1.PaddleJob) string {
+	if job.Spec.PaddleReplicaSpecs != nil {
+		if master, ok := job.Spec.PaddleReplicaSpecs[kubeflowv1.PaddleJobReplicaTypeMaster]; ok {
+			if len(master.Template.Spec.Containers) > 0 {
+				return master.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
+}
+
+func extractJAXImage(job *kubeflowv1.JAXJob) string {
+	if job.Spec.JAXReplicaSpecs != nil {
+		if worker, ok := job.Spec.JAXReplicaSpecs[kubeflowv1.JAXJobReplicaTypeWorker]; ok {
+			if len(worker.Template.Spec.Containers) > 0 {
+				return worker.Template.Spec.Containers[0].Image
+			}
+		}
+	}
+	return ""
 }

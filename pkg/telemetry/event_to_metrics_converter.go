@@ -36,27 +36,48 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 
 	// Check circuit breaker before processing
 	if metrics.IsCircuitBreakerOpen() {
+		metrics.RecordInternalFailure("telemetry", "circuit_breaker_open")
 		klog.V(5).Info("Circuit breaker open, skipping event conversion to metrics")
+		return
+	}
+
+	// Validate cardinality before processing to prevent violations
+	if err := metrics.ValidateMetricCardinality(); err != nil {
+		klog.ErrorS(err, "Cardinality violation detected, triggering circuit breaker")
+		metrics.CheckCardinalityCircuitBreaker() // This will trip the breaker if needed
 		return
 	}
 
 	processCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	switch event.EventType {
-	case JobCreatedEvent:
-		convertJobCreatedToMetrics(processCtx, event)
-	case JobStartedEvent:
-		klog.V(4).InfoS("Job started event processed", "namespace", event.JobNamespace, "name", event.JobName)
-	case JobCompletedEvent:
-		convertJobCompletedToMetrics(processCtx, event, true)
-	case JobFailedEvent:
-		convertJobCompletedToMetrics(processCtx, event, false)
-	case JobDeletedEvent:
-		convertJobDeletedToMetrics(processCtx, event)
-	default:
-		klog.V(4).InfoS("Unknown job event type", "eventType", event.EventType)
-	}
+	// Process event with panic recovery
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				klog.ErrorS(nil, "Panic in event conversion", "panic", r, "event", event.EventType)
+				metrics.RecordInternalFailure("telemetry", "panic_in_conversion")
+			}
+		}()
+
+		switch event.EventType {
+		case JobCreatedEvent:
+			convertJobCreatedToMetrics(processCtx, event)
+		case JobStartedEvent:
+			klog.V(4).InfoS("Job started event processed", "namespace", event.JobNamespace, "name", event.JobName)
+		case JobCompletedEvent:
+			convertJobCompletedToMetrics(processCtx, event, true)
+		case JobFailedEvent:
+			convertJobCompletedToMetrics(processCtx, event, false)
+		case JobDeletedEvent:
+			convertJobDeletedToMetrics(processCtx, event)
+		default:
+			klog.V(4).InfoS("Unknown job event type", "eventType", event.EventType)
+		}
+	}()
+
+	// Post-processing cardinality check
+	metrics.CheckCardinalityCircuitBreaker()
 }
 
 // convertJobCreatedToMetrics processes job creation events.

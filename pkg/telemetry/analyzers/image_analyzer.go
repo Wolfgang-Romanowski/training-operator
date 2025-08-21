@@ -106,7 +106,8 @@ func AnalyzeContainerImage(image string) ImageAnalysisResult {
 		versionFound := false
 		for version, pattern := range rhoaiVersionPatterns {
 			if pattern.MatchString(imageLower) {
-				result.RHOAIVersion = version
+				// Normalize version to ensure cardinality compliance
+				result.RHOAIVersion = normalizeVersionForCardinality(version)
 				versionFound = true
 				break
 			}
@@ -130,6 +131,25 @@ func AnalyzeContainerImage(image string) ImageAnalysisResult {
 	result.ImageSource = "custom"
 	result.RHOAIVersion = "none"
 	return result
+}
+
+// normalizeVersionForCardinality ensures version strings comply with Red Hat cardinality limits.
+// Only 5 version values are allowed to stay within the 10 timeseries total limit.
+func normalizeVersionForCardinality(version string) string {
+	// Red Hat monitoring allows max 5 version labels to stay within 10 timeseries total
+	allowedVersions := map[string]bool{
+		"pytorch-2.4":     true,
+		"pytorch-2.3":     true,
+		"tensorflow-2.15": true,
+		"tensorflow-2.14": true,
+	}
+	
+	if allowedVersions[version] {
+		return version
+	}
+	
+	// All other versions map to "other" to maintain cardinality compliance
+	return "other"
 }
 
 // detectAcceleratorType detects GPU or accelerator type from container image name.
@@ -184,37 +204,8 @@ func IsRHOAIImage(image string) bool {
 // It supports all Kubeflow training operator frameworks including PyTorch,
 // TensorFlow, MPI, XGBoost, Paddle, and JAX.
 func ExtractContainerImage(job interface{}, framework string) string {
-	frameworkLower := strings.ToLower(framework)
-
-	switch frameworkLower {
-	case "pytorch":
-		if pytorchJob, ok := job.(*kubeflowv1.PyTorchJob); ok {
-			return ExtractPyTorchImageFromJob(pytorchJob)
-		}
-	case "tensorflow":
-		if tfJob, ok := job.(*kubeflowv1.TFJob); ok {
-			return ExtractTensorFlowImageFromJob(tfJob)
-		}
-	case "mpi":
-		if mpiJob, ok := job.(*kubeflowv1.MPIJob); ok {
-			return ExtractMPIImageFromJob(mpiJob)
-		}
-	case "xgboost":
-		if xgboostJob, ok := job.(*kubeflowv1.XGBoostJob); ok {
-			return ExtractXGBoostImageFromJob(xgboostJob)
-		}
-	case "paddle":
-		if paddleJob, ok := job.(*kubeflowv1.PaddleJob); ok {
-			return ExtractPaddleImageFromJob(paddleJob)
-		}
-	case "jax":
-		if jaxJob, ok := job.(*kubeflowv1.JAXJob); ok {
-			return ExtractJAXImageFromJob(jaxJob)
-		}
-	}
-
-	klog.V(4).InfoS("Could not extract image from job", "framework", framework)
-	return ""
+	// Use the unified extraction function
+	return ExtractImageFromTrainingJob(job, framework)
 }
 
 // ExtractImageFromTrainingJob extracts the container image from any training job type.
@@ -309,44 +300,3 @@ func extractImageFromReplicaSpec(replica *kubeflowv1.ReplicaSpec) string {
 	return ""
 }
 
-// ExtractPyTorchImageFromJob extracts the container image from a PyTorchJob.
-// Deprecated: Use ExtractImageFromTrainingJob(job, "pytorch") instead.
-// This function is kept for backward compatibility.
-func ExtractPyTorchImageFromJob(job *kubeflowv1.PyTorchJob) string {
-	return ExtractImageFromTrainingJob(job, "pytorch")
-}
-
-// ExtractTensorFlowImageFromJob extracts the container image from a TFJob.
-// Deprecated: Use ExtractImageFromTrainingJob(job, "tensorflow") instead.
-// This function is kept for backward compatibility.
-func ExtractTensorFlowImageFromJob(job *kubeflowv1.TFJob) string {
-	return ExtractImageFromTrainingJob(job, "tensorflow")
-}
-
-// ExtractMPIImageFromJob extracts the container image from an MPIJob.
-// Deprecated: Use ExtractImageFromTrainingJob(job, "mpi") instead.
-// This function is kept for backward compatibility.
-func ExtractMPIImageFromJob(job *kubeflowv1.MPIJob) string {
-	return ExtractImageFromTrainingJob(job, "mpi")
-}
-
-// ExtractXGBoostImageFromJob extracts the container image from an XGBoostJob.
-// Deprecated: Use ExtractImageFromTrainingJob(job, "xgboost") instead.
-// This function is kept for backward compatibility.
-func ExtractXGBoostImageFromJob(job *kubeflowv1.XGBoostJob) string {
-	return ExtractImageFromTrainingJob(job, "xgboost")
-}
-
-// ExtractPaddleImageFromJob extracts the container image from a PaddleJob.
-// Deprecated: Use ExtractImageFromTrainingJob(job, "paddle") instead.
-// This function is kept for backward compatibility.
-func ExtractPaddleImageFromJob(job *kubeflowv1.PaddleJob) string {
-	return ExtractImageFromTrainingJob(job, "paddle")
-}
-
-// ExtractJAXImageFromJob extracts the container image from a JAXJob.
-// Deprecated: Use ExtractImageFromTrainingJob(job, "jax") instead.
-// This function is kept for backward compatibility.
-func ExtractJAXImageFromJob(job *kubeflowv1.JAXJob) string {
-	return ExtractImageFromTrainingJob(job, "jax")
-}

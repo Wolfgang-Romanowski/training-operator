@@ -161,64 +161,8 @@ func determineSimpleCustomerType(namespace string, annotations, labels map[strin
 	return "non-enterprise"
 }
 
-// identifyUsageSource determines how the training job was created.
-// This helps understand user interaction patterns and tooling preferences
-// for product improvement insights.
-func identifyUsageSource(annotations, labels map[string]string) string {
-	if annotations != nil {
-		// RHOAI UI/Dashboard source
-		if source, exists := annotations["rhods.openshiftai.io/source"]; exists {
-			switch source {
-			case "dashboard", "ui", "workbench":
-				return "rhoai-ui"
-			case "notebook":
-				return "rhoai-notebook"
-			}
-		}
-
-		// kubectl usage detection
-		if _, exists := annotations["kubectl.kubernetes.io/last-applied-configuration"]; exists {
-			return "cli"
-		}
-
-		// Helm/operator usage
-		if _, exists := annotations["meta.helm.sh/release-name"]; exists {
-			return "helm"
-		}
-
-		// OpenShift template usage
-		if _, exists := annotations["template.openshift.io/instance"]; exists {
-			return "openshift-template"
-		}
-
-		// Generic Kubernetes API usage
-		if managedBy, exists := annotations["app.kubernetes.io/managed-by"]; exists {
-			return "managed-" + managedBy
-		}
-	}
-
-	if labels != nil {
-		// Check for common management labels
-		if managedBy, exists := labels["app.kubernetes.io/managed-by"]; exists {
-			return "managed-" + managedBy
-		}
-
-		// Argo/GitOps patterns
-		if _, exists := labels["argocd.argoproj.io/instance"]; exists {
-			return "argocd"
-		}
-
-		// Flux patterns
-		if _, exists := labels["kustomize.toolkit.fluxcd.io/name"]; exists {
-			return "flux"
-		}
-	}
-
-	return "api-direct" // Direct API usage (programmatic)
-}
-
 // Note: The following functions were removed for production readiness:
 // - extractTenantHints: Removed to ensure privacy compliance (no PII collection)
 // - analyzeJobResources: Removed as it contained only placeholder values
-// These functions are no longer needed as customer classification is handled
-// by the main ClassifyCustomerUsage function above.
+// - identifyUsageSource: Removed as it was never called in production code
+// Customer classification is handled by the main ClassifyCustomerUsage function above.

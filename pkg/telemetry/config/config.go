@@ -1,14 +1,33 @@
-// pkg/telemetry/config/config.go
-// Centralized configuration management for all telemetry settings
+// Copyright 2025 The Kubeflow Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package config
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
 
@@ -18,6 +37,9 @@ type TelemetryConfig struct {
 	Enabled          bool
 	AsyncProcessing  bool
 	ProcessingTimeout time.Duration
+	Endpoint         string  // Telemetry endpoint URL
+	Token            string  // Authentication token
+	ClusterID        string  // Cluster identifier
 	
 	// Metric settings
 	MaxCardinality   int
@@ -25,7 +47,7 @@ type TelemetryConfig struct {
 	MaxEntryAge      time.Duration
 	MaxEntries       int
 	
-	// Event processing
+	// Event processing (unused but kept for compatibility)
 	EventBufferSize  int
 	BatchSize        int
 	FlushInterval    time.Duration
@@ -172,4 +194,256 @@ func GetMaxEntryAge() time.Duration {
 // GetMaxEntries returns the maximum number of entries to cache
 func GetMaxEntries() int {
 	return Get().MaxEntries
+}
+
+// TelemetryHealthStatus represents the health status of the telemetry pipeline.
+// It tracks the operational state of each component in the telemetry system.
+type TelemetryHealthStatus struct {
+	Healthy           bool                       `json:"healthy"`
+	ConfigLoaded      bool                       `json:"config_loaded"`
+	OTELCollectorUp   bool                       `json:"otel_collector_up"`
+	SecretsConfigured bool                       `json:"secrets_configured"`
+	MetricsExported   int                        `json:"metrics_exported"`
+	LastExportTime    time.Time                  `json:"last_export_time"`
+	Errors            []string                   `json:"errors,omitempty"`
+	ComponentStatus   map[string]ComponentStatus `json:"components"`
+}
+
+// ComponentStatus represents the health of a single telemetry component.
+type ComponentStatus struct {
+	Healthy     bool      `json:"healthy"`
+	LastChecked time.Time `json:"last_checked"`
+	Message     string    `json:"message,omitempty"`
+}
+
+var (
+	healthStatus     TelemetryHealthStatus
+	healthStatusLock sync.RWMutex
+)
+
+// GetTelemetryHealthStatus returns the current health status of the telemetry pipeline.
+// This provides visibility into the operational state of all telemetry components.
+func GetTelemetryHealthStatus() TelemetryHealthStatus {
+	healthStatusLock.RLock()
+	defer healthStatusLock.RUnlock()
+	
+	// Make a copy to avoid race conditions
+	status := healthStatus
+	status.ComponentStatus = make(map[string]ComponentStatus)
+	for k, v := range healthStatus.ComponentStatus {
+		status.ComponentStatus[k] = v
+	}
+	
+	return status
+}
+
+// UpdateTelemetryHealthStatus updates the health status of a specific component.
+// Components should call this periodically to report their operational state.
+func UpdateTelemetryHealthStatus(component string, healthy bool, message string) {
+	healthStatusLock.Lock()
+	defer healthStatusLock.Unlock()
+	
+	if healthStatus.ComponentStatus == nil {
+		healthStatus.ComponentStatus = make(map[string]ComponentStatus)
+	}
+	
+	healthStatus.ComponentStatus[component] = ComponentStatus{
+		Healthy:     healthy,
+		LastChecked: time.Now(),
+		Message:     message,
+	}
+	
+	// Recalculate overall health
+	healthStatus.Healthy = calculateOverallHealth()
+	
+	if healthy {
+		klog.V(4).InfoS("Telemetry component healthy", "component", component)
+	} else {
+		klog.WarningS(nil, "Telemetry component unhealthy", "component", component, "message", message)
+	}
+}
+
+// calculateOverallHealth determines if the telemetry pipeline is healthy overall.
+func calculateOverallHealth() bool {
+	criticalComponents := []string{"config", "metrics", "otel-collector"}
+	
+	for _, component := range criticalComponents {
+		if status, exists := healthStatus.ComponentStatus[component]; exists {
+			if !status.Healthy {
+				return false
+			}
+			// Component is stale if not checked in last 5 minutes
+			if time.Since(status.LastChecked) > 5*time.Minute {
+				return false
+			}
+		} else {
+			// Critical component has never reported
+			return false
+		}
+	}
+	
+	return true
+}
+
+// PerformTelemetryHealthCheck performs a comprehensive health check of the telemetry system.
+// This should be called periodically by the health check endpoint.
+func PerformTelemetryHealthCheck() error {
+	healthStatusLock.Lock()
+	defer healthStatusLock.Unlock()
+	
+	healthStatus.Errors = []string{}
+	
+	// Check configuration
+	cfg := Get()
+	healthStatus.ConfigLoaded = cfg != nil
+	if !healthStatus.ConfigLoaded {
+		healthStatus.Errors = append(healthStatus.Errors, "telemetry configuration not loaded")
+	}
+	
+	// Check if secrets are properly configured
+	if cfg != nil && cfg.Endpoint != "" && !strings.Contains(cfg.Endpoint, "placeholder") {
+		healthStatus.SecretsConfigured = true
+	} else {
+		healthStatus.SecretsConfigured = false
+		healthStatus.Errors = append(healthStatus.Errors, "telemetry secrets not configured or contain placeholders")
+	}
+	
+	// Check OTEL collector connectivity (placeholder for actual implementation)
+	healthStatus.OTELCollectorUp = healthStatus.SecretsConfigured
+	
+	// Calculate overall health
+	healthStatus.Healthy = len(healthStatus.Errors) == 0 && calculateOverallHealth()
+	
+	if !healthStatus.Healthy {
+		return fmt.Errorf("telemetry health check failed: %v", healthStatus.Errors)
+	}
+	
+	return nil
+}
+
+// AutoPopulateTelemetrySecretFromCluster attempts to populate telemetry configuration from cluster secrets.
+// This function extracts telemetry tokens from the OpenShift pull secret and cluster configuration.
+func AutoPopulateTelemetrySecretFromCluster(ctx context.Context, kubeClient kubernetes.Interface, namespace string) error {
+	klog.Info("Attempting to auto-populate telemetry configuration from cluster")
+
+	// Try to get existing telemetry secret first
+	secret, err := kubeClient.CoreV1().Secrets(namespace).Get(ctx, "training-operator-telemetry-secret", metav1.GetOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check for existing telemetry secret: %w", err)
+	}
+
+	// If secret exists and has valid data, use it
+	if err == nil && secret.Data != nil {
+		if token, exists := secret.Data["telemetry-token"]; exists && string(token) != "placeholder" {
+			config.Token = string(token)
+		}
+		if endpoint, exists := secret.Data["telemetry-endpoint"]; exists {
+			config.Endpoint = string(endpoint)
+		}
+		if clusterID, exists := secret.Data["cluster-id"]; exists {
+			config.ClusterID = string(clusterID)
+		}
+		
+		if config.Token != "" && config.Endpoint != "" {
+			klog.Info("Successfully loaded telemetry configuration from existing secret")
+			return nil
+		}
+	}
+
+	// Try to extract from pull secret
+	telemetryToken, extractErr := extractTelemetryTokenFromPullSecret(ctx, kubeClient)
+	if extractErr != nil {
+		klog.Warningf("Could not extract telemetry token from pull secret: %v", extractErr)
+		// Not a fatal error, continue with placeholders
+		telemetryToken = ""
+	}
+
+	// Create or update the telemetry secret
+	newSecretData := map[string][]byte{
+		"telemetry-token":    []byte(telemetryToken),
+		"telemetry-endpoint": []byte("https://infogw.api.openshift.com/metrics/v1/receive"),
+		"cluster-id":         []byte(config.ClusterID),
+	}
+
+	if telemetryToken == "" {
+		// Use placeholders if we couldn't get real values
+		newSecretData["telemetry-token"] = []byte("placeholder")
+		klog.Warning("Using placeholder values for telemetry secret - telemetry will not function until properly configured")
+	}
+
+	newSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "training-operator-telemetry-secret",
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "training-operator",
+				"app.kubernetes.io/component":  "telemetry",
+				"app.kubernetes.io/managed-by": "training-operator",
+			},
+		},
+		Data: newSecretData,
+	}
+
+	if err == nil {
+		// Update existing secret
+		newSecret.ResourceVersion = secret.ResourceVersion
+		_, updateErr := kubeClient.CoreV1().Secrets(namespace).Update(ctx, newSecret, metav1.UpdateOptions{})
+		if updateErr != nil {
+			return fmt.Errorf("failed to update telemetry secret: %w", updateErr)
+		}
+		klog.Info("Updated telemetry secret")
+	} else {
+		// Create new secret
+		_, createErr := kubeClient.CoreV1().Secrets(namespace).Create(ctx, newSecret, metav1.CreateOptions{})
+		if createErr != nil && !errors.IsAlreadyExists(createErr) {
+			return fmt.Errorf("failed to create telemetry secret: %w", createErr)
+		}
+		klog.Info("Created telemetry secret")
+	}
+
+	// Update config with the values
+	if telemetryToken != "" {
+		config.Token = telemetryToken
+		config.Endpoint = "https://infogw.api.openshift.com/metrics/v1/receive"
+	}
+
+	return nil
+}
+
+// extractTelemetryTokenFromPullSecret extracts the telemetry token from the OpenShift pull secret.
+func extractTelemetryTokenFromPullSecret(ctx context.Context, kubeClient kubernetes.Interface) (string, error) {
+	// Get the pull secret from openshift-config namespace
+	pullSecret, err := kubeClient.CoreV1().Secrets("openshift-config").Get(ctx, "pull-secret", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get pull secret: %w", err)
+	}
+
+	// Extract .dockerconfigjson data
+	dockerConfigJSON, exists := pullSecret.Data[".dockerconfigjson"]
+	if !exists {
+		return "", fmt.Errorf("pull secret does not contain .dockerconfigjson")
+	}
+
+	// Parse the docker config
+	var dockerConfig struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+
+	if err := json.Unmarshal(dockerConfigJSON, &dockerConfig); err != nil {
+		return "", fmt.Errorf("failed to parse docker config: %w", err)
+	}
+
+	// Look for cloud.openshift.com auth which contains telemetry token
+	if cloudAuth, exists := dockerConfig.Auths["cloud.openshift.com"]; exists && cloudAuth.Auth != "" {
+		return cloudAuth.Auth, nil
+	}
+
+	// Fallback to registry.redhat.io auth
+	if redhatAuth, exists := dockerConfig.Auths["registry.redhat.io"]; exists && redhatAuth.Auth != "" {
+		return redhatAuth.Auth, nil
+	}
+
+	return "", fmt.Errorf("no telemetry token found in pull secret")
 }

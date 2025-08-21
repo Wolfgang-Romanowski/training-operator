@@ -249,3 +249,12 @@ spec:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, batch]
           exporters: [logging]
+  
+  # Resource limits for OTEL collector per Red Hat recommendations
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 256Mi

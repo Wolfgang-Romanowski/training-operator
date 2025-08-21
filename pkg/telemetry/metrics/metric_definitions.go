@@ -436,29 +436,142 @@ func (ivt *ImageVersionTracker) consolidateOtherVersions() {
 // per Red Hat Monitoring Handbook requirements.
 func ValidateMetricCardinality() error {
 	const maxTimeseries = 10
+	const maxPerMetric = 5
 	
 	gatherer := prometheus.DefaultGatherer
 	metricFamilies, err := gatherer.Gather()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to gather metrics: %w", err)
 	}
 
 	totalTimeseries := 0
+	violations := []string{}
+	metricBreakdown := make(map[string]int)
+	
 	for _, mf := range metricFamilies {
 		name := mf.GetName()
 		if strings.HasPrefix(name, "training_operator_") {
 			count := len(mf.GetMetric())
 			totalTimeseries += count
-			klog.V(5).InfoS("Metric cardinality",
+			metricBreakdown[name] = count
+			
+			// Check per-metric cardinality
+			if count > maxPerMetric {
+				violations = append(violations, 
+					fmt.Sprintf("%s has %d timeseries (max %d)", name, count, maxPerMetric))
+			}
+			
+			klog.V(5).InfoS("Metric cardinality check",
 				"metric", name,
-				"timeseries", count)
+				"timeseries", count,
+				"limit", maxPerMetric)
 		}
 	}
 
+	// Check total cardinality
 	if totalTimeseries > maxTimeseries {
-		return fmt.Errorf("metric cardinality %d exceeds Red Hat limit of %d timeseries",
-			totalTimeseries, maxTimeseries)
+		violations = append(violations,
+			fmt.Sprintf("total cardinality %d exceeds Red Hat limit of %d", totalTimeseries, maxTimeseries))
+	}
+	
+	if len(violations) > 0 {
+		// Trigger automatic cardinality reduction
+		klog.Warning("Cardinality violations detected, triggering automatic reduction")
+		ReduceMetricCardinality(metricBreakdown)
+		
+		return fmt.Errorf("cardinality violations: %v", violations)
 	}
 
+	klog.V(4).InfoS("Cardinality validation passed",
+		"totalTimeseries", totalTimeseries,
+		"metrics", len(metricBreakdown))
 	return nil
+}
+
+// ReduceMetricCardinality automatically reduces cardinality when limits are exceeded.
+// It consolidates the least-used metric labels to stay within Red Hat monitoring limits.
+func ReduceMetricCardinality(metricBreakdown map[string]int) {
+	tracker := getImageVersionTracker()
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	
+	// Find metrics that exceed limits
+	for metricName, count := range metricBreakdown {
+		if count <= 5 {
+			continue
+		}
+		
+		switch metricName {
+		case "training_operator_image_version_usage":
+			// Consolidate least-used versions into "other"
+			consolidateLeastUsedVersions(tracker, count-4) // Keep 4 specific + 1 "other"
+			
+		case "training_operator_image_source_preference_total":
+			// This is a counter, harder to reduce
+			klog.Warning("Cannot automatically reduce counter metric cardinality")
+			
+		case "training_operator_enterprise_adoption_total":
+			// This should only have 2 labels (enterprise/non-enterprise)
+			if count > 2 {
+				klog.Error("Enterprise adoption metric has unexpected cardinality")
+			}
+		}
+	}
+	
+	klog.Info("Completed automatic cardinality reduction")
+}
+
+// consolidateLeastUsedVersions merges the least-used versions into "other" category.
+// This ensures we stay within the 5-version limit for version tracking metrics.
+func consolidateLeastUsedVersions(tracker *ImageVersionTracker, excessCount int) {
+	if excessCount <= 0 {
+		return
+	}
+	
+	// Create sorted list of versions by usage
+	type versionUsage struct {
+		version string
+		count   int
+	}
+	
+	var versions []versionUsage
+	for version, count := range tracker.topVersions {
+		if version != "other" && count > 0 {
+			versions = append(versions, versionUsage{version, count})
+		}
+	}
+	
+	// Sort by usage (ascending, so least used are first)
+	for i := 0; i < len(versions)-1; i++ {
+		for j := i + 1; j < len(versions); j++ {
+			if versions[i].count > versions[j].count {
+				versions[i], versions[j] = versions[j], versions[i]
+			}
+		}
+	}
+	
+	// Consolidate least used versions
+	consolidated := 0
+	for i := 0; i < len(versions) && i < excessCount; i++ {
+		version := versions[i].version
+		count := versions[i].count
+		
+		// Move to "other"
+		tracker.topVersions["other"] += count
+		tracker.topVersions[version] = 0
+		
+		// Update metric
+		TrainingOperatorImageVersionUsage.WithLabelValues("other").Add(float64(count))
+		TrainingOperatorImageVersionUsage.WithLabelValues(version).Set(0)
+		
+		consolidated++
+		klog.InfoS("Consolidated version to reduce cardinality",
+			"version", version,
+			"count", count,
+			"action", "merged into 'other'")
+	}
+	
+	klog.InfoS("Cardinality reduction completed",
+		"consolidatedVersions", consolidated,
+		"remainingVersions", len(versions)-consolidated)
 }

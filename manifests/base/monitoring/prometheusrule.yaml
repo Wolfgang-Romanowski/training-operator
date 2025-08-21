@@ -5,7 +5,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: training-operator-recording-rules
-  namespace: openshift-monitoring  # MUST be in openshift-monitoring per Red Hat Handbook
+  namespace: openshift-monitoring  # REQUIRED: Must be in openshift-monitoring per Red Hat Handbook
   labels:
     monitoring.opendatahub.io/scrape: "true"
     prometheus: kube-prometheus
@@ -25,7 +25,7 @@ spec:
     # Business Question: Can we deprecate PyTorch 2.4 or TensorFlow 2.14?
     - record: openshift:training_version_deprecation_analysis
       expr: |
-        sum by (version) (training_operator_image_version_usage{version=~"pytorch-2.3|pytorch-2.4|tensorflow-2.14|tensorflow-2.15"})
+        sum by (version) (training_operator_image_version_usage{version=~"pytorch-2\\.[34]|tensorflow-2\\.1[45]|other"})
     
     # METRIC 2: RHOAI Adoption Rate
     # Business Question: What % of jobs use RHOAI official images?
@@ -116,6 +116,45 @@ spec:
         summary: "Training operator metrics exceed cardinality limit"
         description: "Metrics cardinality {{ $value }} exceeds Red Hat limit of 10 timeseries"
         runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#high-cardinality"
+    
+    - alert: TrainingOperatorTelemetryEndpointFailure
+      expr: |
+        rate(otelcol_exporter_send_failed_metric_points_total{exporter="otlphttp/telemetry"}[5m]) > 0
+      for: 15m
+      labels:
+        severity: warning
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Telemetry export to Observatorium failing"
+        description: "Failed to export {{ $value | humanize }} metrics per second to Red Hat telemetry endpoint"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#telemetry-export-failure"
+    
+    - alert: TrainingOperatorTelemetryAuthFailure
+      expr: |
+        increase(otelcol_exporter_send_failed_metric_points_total{exporter="otlphttp/telemetry",error_type="auth"}[5m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Telemetry authentication failure"
+        description: "Authentication to Red Hat Observatorium is failing - check TELEMETRY_TOKEN secret"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#telemetry-auth-failure"
+    
+    - alert: TrainingOperatorMetricScrapeFailing
+      expr: |
+        up{job="training-operator-metrics-monitor"} == 0
+      for: 10m
+      labels:
+        severity: warning
+        component: training-operator
+        team: rhoai-platform
+      annotations:
+        summary: "Training operator metrics scraping is failing"
+        description: "Prometheus cannot scrape metrics from training-operator pods"
+        runbook_url: "https://github.com/opendatahub-io/training-operator/wiki/alerts#scrape-failure"
     
     - alert: TrainingOperatorHighMemoryUsage
       expr: |

@@ -21,7 +21,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/kubeflow/training-operator/pkg/telemetry/config"
+	telemetryconfig "github.com/kubeflow/training-operator/pkg/telemetry/config"
 	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 )
 
@@ -159,10 +159,10 @@ func countCurrentTimeseries() int {
 // getConfigurationStatus returns the current telemetry configuration status.
 func getConfigurationStatus() ConfigStatus {
 	return ConfigStatus{
-		TelemetryEnabled: config.IsTelemetryConfigEnabled(),
-		TelemetryURL:     config.GetTelemetryURL(),
-		SecretConfigured: config.IsTelemetrySecretConfigured(),
-		Namespace:        config.GetTelemetryNamespace(),
+		TelemetryEnabled: telemetryconfig.IsTelemetryConfigEnabled(),
+		TelemetryURL:     telemetryconfig.GetTelemetryURL(),
+		SecretConfigured: telemetryconfig.IsTelemetrySecretConfigured(),
+		Namespace:        telemetryconfig.GetTelemetryNamespace(),
 	}
 }
 

@@ -8,10 +8,10 @@ spec:
   template:
     metadata:
       annotations:
-        # Enable otel-collector scraping
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
-        prometheus.io/path: "/metrics"
+        # IMPORTANT: Metrics are scraped ONLY by OTEL collector, NOT directly by Prometheus
+        # This prevents duplicate scraping per RHOAISTRAT-575 federation architecture
+        # The OTEL collector uses kubernetes_sd_configs to discover pods based on labels
+        # NOT these prometheus.io annotations (which would cause duplicate scraping)
     spec:
       containers:
       - name: manager

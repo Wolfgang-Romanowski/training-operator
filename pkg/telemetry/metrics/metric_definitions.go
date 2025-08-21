@@ -150,9 +150,11 @@ func RecordJobCreation(framework, version, imageSource, customerType, namespace,
 		tracker.topVersions[normalizedVersion]++
 		TrainingOperatorImageVersionUsage.WithLabelValues(normalizedVersion).Inc()
 
-		TrainingOperatorImageSourcePreference.WithLabelValues(imageSource).Inc()
+		// CRITICAL: Validate image source to maintain 3 values max
+		validatedImageSource := validateImageSourceForCardinality(imageSource)
+		TrainingOperatorImageSourcePreference.WithLabelValues(validatedImageSource).Inc()
 
-		if imageSource == "rhoai_official" {
+		if validatedImageSource == "rhoai_official" {
 			simplifiedCustomerType := simplifyCustomerTypeForClassification(customerType)
 			TrainingOperatorEnterpriseAdoption.WithLabelValues(simplifiedCustomerType).Inc()
 		}
@@ -271,6 +273,18 @@ func normalizeVersionForTracking(framework, version string) string {
 
 	// Fall back to "other" for unrecognized versions
 	return "other"
+}
+
+// validateImageSourceForCardinality ensures image source stays within 3 allowed values.
+// This is critical to maintain Red Hat's 10 timeseries total limit.
+func validateImageSourceForCardinality(imageSource string) string {
+	switch imageSource {
+	case "rhoai_official", "community":
+		return imageSource
+	default:
+		// Map everything else (custom, unknown, empty) to "custom"
+		return "custom"
+	}
 }
 
 // simplifyCustomerTypeForClassification normalizes customer types to binary classification.
@@ -574,4 +588,81 @@ func consolidateLeastUsedVersions(tracker *ImageVersionTracker, excessCount int)
 	klog.InfoS("Cardinality reduction completed",
 		"consolidatedVersions", consolidated,
 		"remainingVersions", len(versions)-consolidated)
+}
+
+// ====================================================================
+// METRIC UPDATE HELPERS - Consolidated from metric_updaters.go
+// These functions provide safe metric updates with circuit breaker checks
+// ====================================================================
+
+// RecordReconcileError increments the error counter for a specific controller.
+// This tracks reconciliation failures to identify controllers that may need
+// attention or debugging.
+func RecordReconcileError(controller string) {
+	// Check circuit breaker first
+	if IsCircuitBreakerOpen() {
+		klog.V(5).Info("Circuit breaker open, skipping metric update")
+		return
+	}
+
+	reg := Get()
+	if reg == nil {
+		klog.Warning("Metrics registry not available for recording reconcile error")
+		return
+	}
+	if reg.ReconcileErrors == nil {
+		klog.Warning("ReconcileErrors metric not initialized")
+		return
+	}
+
+	reg.ReconcileErrors.WithLabelValues(controller).Inc()
+	klog.V(4).InfoS("Recorded reconcile error", "controller", controller)
+}
+
+// RecordReconcileDuration records the time taken for a controller reconciliation.
+// The duration is measured in seconds and helps identify performance bottlenecks
+// in the reconciliation loop.
+func RecordReconcileDuration(controller string, duration float64) {
+	// Check circuit breaker first
+	if IsCircuitBreakerOpen() {
+		klog.V(5).Info("Circuit breaker open, skipping metric update")
+		return
+	}
+
+	reg := Get()
+	if reg == nil {
+		klog.Warning("Metrics registry not available for recording reconcile duration")
+		return
+	}
+	if reg.ReconcileDuration == nil {
+		klog.Warning("ReconcileDuration metric not initialized")
+		return
+	}
+
+	reg.ReconcileDuration.WithLabelValues(controller).Observe(duration)
+	klog.V(4).InfoS("Recorded reconcile duration", "controller", controller, "duration", duration)
+}
+
+// RecordInternalFailure increments the internal failure counter for debugging.
+// It tracks unexpected errors in specific components with detailed reason codes
+// to help diagnose systemic issues.
+func RecordInternalFailure(component, reason string) {
+	// Check circuit breaker first
+	if IsCircuitBreakerOpen() {
+		klog.V(5).Info("Circuit breaker open, skipping metric update")
+		return
+	}
+
+	reg := Get()
+	if reg == nil {
+		klog.Warning("Metrics registry not available for recording internal failure")
+		return
+	}
+	if reg.InternalFailures == nil {
+		klog.Warning("InternalFailures metric not initialized")
+		return
+	}
+
+	reg.InternalFailures.WithLabelValues(component, reason).Inc()
+	klog.V(4).InfoS("Recorded internal failure", "component", component, "reason", reason)
 }

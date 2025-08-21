@@ -47,10 +47,7 @@ type TelemetryConfig struct {
 	MaxEntryAge      time.Duration
 	MaxEntries       int
 	
-	// Event processing (unused but kept for compatibility)
-	EventBufferSize  int
-	BatchSize        int
-	FlushInterval    time.Duration
+	// Reserved for future use
 }
 
 var (
@@ -70,9 +67,6 @@ func Initialize() {
 			CleanupInterval:   1 * time.Hour,
 			MaxEntryAge:       24 * time.Hour,
 			MaxEntries:        10000,
-			EventBufferSize:   1000,
-			BatchSize:         100,
-			FlushInterval:     30 * time.Second,
 		}
 		
 		loadFromEnvironment()
@@ -196,130 +190,8 @@ func GetMaxEntries() int {
 	return Get().MaxEntries
 }
 
-// TelemetryHealthStatus represents the health status of the telemetry pipeline.
-// It tracks the operational state of each component in the telemetry system.
-type TelemetryHealthStatus struct {
-	Healthy           bool                       `json:"healthy"`
-	ConfigLoaded      bool                       `json:"config_loaded"`
-	OTELCollectorUp   bool                       `json:"otel_collector_up"`
-	SecretsConfigured bool                       `json:"secrets_configured"`
-	MetricsExported   int                        `json:"metrics_exported"`
-	LastExportTime    time.Time                  `json:"last_export_time"`
-	Errors            []string                   `json:"errors,omitempty"`
-	ComponentStatus   map[string]ComponentStatus `json:"components"`
-}
-
-// ComponentStatus represents the health of a single telemetry component.
-type ComponentStatus struct {
-	Healthy     bool      `json:"healthy"`
-	LastChecked time.Time `json:"last_checked"`
-	Message     string    `json:"message,omitempty"`
-}
-
-var (
-	healthStatus     TelemetryHealthStatus
-	healthStatusLock sync.RWMutex
-)
-
-// GetTelemetryHealthStatus returns the current health status of the telemetry pipeline.
-// This provides visibility into the operational state of all telemetry components.
-func GetTelemetryHealthStatus() TelemetryHealthStatus {
-	healthStatusLock.RLock()
-	defer healthStatusLock.RUnlock()
-	
-	// Make a copy to avoid race conditions
-	status := healthStatus
-	status.ComponentStatus = make(map[string]ComponentStatus)
-	for k, v := range healthStatus.ComponentStatus {
-		status.ComponentStatus[k] = v
-	}
-	
-	return status
-}
-
-// UpdateTelemetryHealthStatus updates the health status of a specific component.
-// Components should call this periodically to report their operational state.
-func UpdateTelemetryHealthStatus(component string, healthy bool, message string) {
-	healthStatusLock.Lock()
-	defer healthStatusLock.Unlock()
-	
-	if healthStatus.ComponentStatus == nil {
-		healthStatus.ComponentStatus = make(map[string]ComponentStatus)
-	}
-	
-	healthStatus.ComponentStatus[component] = ComponentStatus{
-		Healthy:     healthy,
-		LastChecked: time.Now(),
-		Message:     message,
-	}
-	
-	// Recalculate overall health
-	healthStatus.Healthy = calculateOverallHealth()
-	
-	if healthy {
-		klog.V(4).InfoS("Telemetry component healthy", "component", component)
-	} else {
-		klog.WarningS(nil, "Telemetry component unhealthy", "component", component, "message", message)
-	}
-}
-
-// calculateOverallHealth determines if the telemetry pipeline is healthy overall.
-func calculateOverallHealth() bool {
-	criticalComponents := []string{"config", "metrics", "otel-collector"}
-	
-	for _, component := range criticalComponents {
-		if status, exists := healthStatus.ComponentStatus[component]; exists {
-			if !status.Healthy {
-				return false
-			}
-			// Component is stale if not checked in last 5 minutes
-			if time.Since(status.LastChecked) > 5*time.Minute {
-				return false
-			}
-		} else {
-			// Critical component has never reported
-			return false
-		}
-	}
-	
-	return true
-}
-
-// PerformTelemetryHealthCheck performs a comprehensive health check of the telemetry system.
-// This should be called periodically by the health check endpoint.
-func PerformTelemetryHealthCheck() error {
-	healthStatusLock.Lock()
-	defer healthStatusLock.Unlock()
-	
-	healthStatus.Errors = []string{}
-	
-	// Check configuration
-	cfg := Get()
-	healthStatus.ConfigLoaded = cfg != nil
-	if !healthStatus.ConfigLoaded {
-		healthStatus.Errors = append(healthStatus.Errors, "telemetry configuration not loaded")
-	}
-	
-	// Check if secrets are properly configured
-	if cfg != nil && cfg.Endpoint != "" && !strings.Contains(cfg.Endpoint, "placeholder") {
-		healthStatus.SecretsConfigured = true
-	} else {
-		healthStatus.SecretsConfigured = false
-		healthStatus.Errors = append(healthStatus.Errors, "telemetry secrets not configured or contain placeholders")
-	}
-	
-	// Check OTEL collector connectivity (placeholder for actual implementation)
-	healthStatus.OTELCollectorUp = healthStatus.SecretsConfigured
-	
-	// Calculate overall health
-	healthStatus.Healthy = len(healthStatus.Errors) == 0 && calculateOverallHealth()
-	
-	if !healthStatus.Healthy {
-		return fmt.Errorf("telemetry health check failed: %v", healthStatus.Errors)
-	}
-	
-	return nil
-}
+// NOTE: Health monitoring functionality has been moved to health_endpoint.go
+// to consolidate all health-related code in one place
 
 // AutoPopulateTelemetrySecretFromCluster attempts to populate telemetry configuration from cluster secrets.
 // This function extracts telemetry tokens from the OpenShift pull secret and cluster configuration.

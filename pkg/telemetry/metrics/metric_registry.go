@@ -167,3 +167,10 @@ func ValidateCardinalityLimits() error {
 	}
 	return nil
 }
+
+// EnsureInitialized ensures the telemetry metrics registry is initialized.
+// This function is called from main.go to set up telemetry on startup.
+// It is safe to call multiple times - subsequent calls are no-ops.
+func EnsureInitialized() error {
+	return Initialize()
+}

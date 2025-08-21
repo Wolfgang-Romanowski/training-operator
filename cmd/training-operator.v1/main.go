@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -133,19 +134,24 @@ func main() {
 	// Initialize telemetry metrics if enabled
 	if telemetryEnabled {
 		setupLog.Info("Initializing telemetry metrics")
-		metrics.EnsureInitialized()
+		if err := metrics.EnsureInitialized(); err != nil {
+			setupLog.Error(err, "Failed to initialize telemetry metrics")
+			os.Exit(1)
+		}
+		
+		// Initialize telemetry event receiver for async processing
+		if err := telemetry.InitializeTelemetryReceiver(); err != nil {
+			setupLog.Error(err, "Failed to initialize telemetry event receiver")
+			os.Exit(1)
+		}
+		
 		// Set environment variable for telemetry
 		os.Setenv("TELEMETRY_ENABLED", "true")
+		setupLog.Info("Telemetry system fully initialized")
 	} else {
 		setupLog.Info("Telemetry metrics disabled")
 		os.Setenv("TELEMETRY_ENABLED", "false")
 	}
-
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
-		},
 
 	var cacheOpts cache.Options
 	if namespace != "" {

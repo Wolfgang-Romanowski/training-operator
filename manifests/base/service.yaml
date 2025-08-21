@@ -1,10 +1,8 @@
 apiVersion: v1
 kind: Service
 metadata:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "8080"
+  # REMOVED prometheus.io annotations per RHOAISTRAT-575
+  # Metrics are collected via OTEL collector, not direct Prometheus scraping
   labels:
     app: training-operator
   name: training-operator

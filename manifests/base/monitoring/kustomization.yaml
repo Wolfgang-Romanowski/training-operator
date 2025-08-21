@@ -14,9 +14,6 @@ resources:
   - training-operator-servicemonitor.yaml
   - prometheusrule.yaml
   
-  # Deployment configuration
-  - deployment-metrics-patch.yaml
-  
   # Observability UI integration per documentation
   - observability-ui-plugins.yaml
 

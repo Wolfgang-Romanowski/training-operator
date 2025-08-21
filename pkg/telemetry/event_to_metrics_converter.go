@@ -12,13 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package telemetry provides telemetry collection for training-operator.
+// This file handles conversion of job events to business metrics per RHOAISTRAT-575.
 package telemetry
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
@@ -26,25 +30,25 @@ import (
 	"github.com/kubeflow/training-operator/pkg/telemetry/metrics"
 )
 
-// convertEventToMetrics processes training job events and converts them to telemetry metrics.
-// It applies appropriate timeout protection to ensure event processing doesn't block
-// the main reconciliation loop.
+// convertEventToMetrics is the main entry point for converting job events to metrics.
+// It includes circuit breaker protection and cardinality validation to ensure
+// compliance with Red Hat monitoring requirements.
 func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	if !isTelemetryEnabled() {
 		return
 	}
 
-	// Check circuit breaker before processing
+	// Circuit breaker protection
 	if metrics.IsCircuitBreakerOpen() {
 		metrics.RecordInternalFailure("telemetry", "circuit_breaker_open")
 		klog.V(5).Info("Circuit breaker open, skipping event conversion to metrics")
 		return
 	}
 
-	// Validate cardinality before processing to prevent violations
+	// Pre-processing cardinality validation
 	if err := metrics.ValidateMetricCardinality(); err != nil {
 		klog.ErrorS(err, "Cardinality violation detected, triggering circuit breaker")
-		metrics.CheckCardinalityCircuitBreaker() // This will trip the breaker if needed
+		metrics.CheckCardinalityCircuitBreaker()
 		return
 	}
 
@@ -60,17 +64,22 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 			}
 		}()
 
+		// Process based on event type
 		switch event.EventType {
 		case JobCreatedEvent:
-			convertJobCreatedToMetrics(processCtx, event)
-		case JobStartedEvent:
-			klog.V(4).InfoS("Job started event processed", "namespace", event.JobNamespace, "name", event.JobName)
+			processJobCreatedEvent(processCtx, event)
 		case JobCompletedEvent:
-			convertJobCompletedToMetrics(processCtx, event, true)
+			processJobCompletionEvent(processCtx, event, true)
 		case JobFailedEvent:
-			convertJobCompletedToMetrics(processCtx, event, false)
+			processJobCompletionEvent(processCtx, event, false)
 		case JobDeletedEvent:
-			convertJobDeletedToMetrics(processCtx, event)
+			processJobDeletedEvent(processCtx, event)
+		case JobStartedEvent:
+			// Started events are logged but don't update business metrics
+			klog.V(4).InfoS("Job started event processed", 
+				"namespace", event.JobNamespace, 
+				"name", event.JobName,
+				"framework", event.Framework)
 		default:
 			klog.V(4).InfoS("Unknown job event type", "eventType", event.EventType)
 		}
@@ -80,91 +89,162 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 	metrics.CheckCardinalityCircuitBreaker()
 }
 
-// convertJobCreatedToMetrics processes job creation events.
-// It extracts container image information, analyzes customer type, and updates
-// telemetry metrics for version tracking and usage pattern analysis.
-func convertJobCreatedToMetrics(ctx context.Context, event JobEventData) {
-	metaObj, ok := event.Job.(metav1.Object)
-	if !ok {
-		klog.Warning("Job does not implement metav1.Object interface")
+// processJobCreatedEvent handles job creation events by extracting and analyzing
+// container images to record business metrics for version usage, image source
+// preference, and enterprise adoption.
+func processJobCreatedEvent(ctx context.Context, event JobEventData) {
+	// Extract container images using generic extraction
+	containerImages := extractContainerImagesGeneric(event.Job)
+	if len(containerImages) == 0 {
+		klog.V(4).InfoS("No container images found in job", 
+			"framework", event.Framework,
+			"namespace", event.JobNamespace)
 		return
 	}
 
-	namespace := metaObj.GetNamespace()
-	name := metaObj.GetName()
-	framework := strings.ToLower(event.Framework)
-
-	customerInfo := ClassifyCustomerUsage(namespace, event.Job)
+	// Determine customer type once for all images
+	customerInfo := ClassifyCustomerUsage(event.JobNamespace, event.Job)
 	customerType := "non-enterprise"
 	if customerInfo != nil {
 		customerType = customerInfo.CustomerType
 	}
 
-	image := analyzers.ExtractContainerImage(event.Job, framework)
-	if image == "" {
-		klog.V(3).InfoS("Could not extract container image from job", "namespace", namespace, "name", name, "framework", framework)
-		image = "unknown"
+	// Process each container image for metrics
+	for _, imageSpec := range containerImages {
+		if imageSpec == "" {
+			continue
+		}
+
+		// Analyze the image for version and source
+		imageAnalysis := analyzers.AnalyzeContainerImage(imageSpec)
+		
+		// Record all three business metrics
+		metrics.RecordImageVersionUsage(imageAnalysis.RHOAIVersion)
+		metrics.RecordImageSourcePreference(imageAnalysis.ImageSource)
+		metrics.RecordEnterpriseAdoption(customerType)
+
+		klog.V(3).InfoS("Job creation metrics recorded",
+			"framework", event.Framework,
+			"namespace", event.JobNamespace,
+			"version", imageAnalysis.RHOAIVersion,
+			"source", imageAnalysis.ImageSource,
+			"customerType", customerType)
 	}
-
-	imageAnalysis := analyzers.AnalyzeContainerImage(image)
-
-	metrics.RecordJobCreation(
-		framework,
-		imageAnalysis.RHOAIVersion,
-		imageAnalysis.ImageSource,
-		customerType,
-		namespace,
-		name,
-	)
-
-	klog.V(2).InfoS("Job creation metrics recorded",
-		"namespace", namespace,
-		"name", name,
-		"framework", framework,
-		"version", imageAnalysis.RHOAIVersion,
-		"imageSource", imageAnalysis.ImageSource,
-		"customerType", customerType,
-		"acceleratorType", imageAnalysis.AcceleratorType)
 }
 
-// convertJobCompletedToMetrics processes job completion events.
-// It logs the final status of training jobs (succeeded or failed) for
-// success rate analysis and reliability tracking.
-func convertJobCompletedToMetrics(ctx context.Context, event JobEventData, succeeded bool) {
-	metaObj, ok := event.Job.(metav1.Object)
-	if !ok {
-		return
-	}
-
-	namespace := metaObj.GetNamespace()
-	name := metaObj.GetName()
-
+// processJobCompletionEvent handles job completion events (success or failure).
+// Currently logs for observability but doesn't update business metrics as
+// completion status isn't part of the 3 required metrics.
+func processJobCompletionEvent(ctx context.Context, event JobEventData, succeeded bool) {
 	status := "failed"
 	if succeeded {
 		status = "succeeded"
 	}
 
-	klog.V(3).InfoS("Job completion event processed", "namespace", namespace, "name", name, "status", status, "framework", event.Framework)
+	klog.V(3).InfoS("Job completion event processed", 
+		"namespace", event.JobNamespace,
+		"name", event.JobName,
+		"status", status,
+		"framework", event.Framework)
 }
 
-// convertJobDeletedToMetrics processes job deletion events.
-// It removes associated telemetry tracking for the deleted training job
-// to maintain accurate active job counts and prevent metric drift.
-func convertJobDeletedToMetrics(ctx context.Context, event JobEventData) {
-	metaObj, ok := event.Job.(metav1.Object)
-	if !ok {
-		return
+// processJobDeletedEvent handles job deletion events.
+// Deletion events are logged for observability but don't affect the
+// 3 business metrics which track adoption patterns, not lifecycle.
+func processJobDeletedEvent(ctx context.Context, event JobEventData) {
+	klog.V(3).InfoS("Job deletion event processed",
+		"namespace", event.JobNamespace,
+		"name", event.JobName,
+		"framework", event.Framework)
+}
+
+// extractContainerImagesGeneric extracts all container images from any job type
+// using reflection to avoid duplicating code for each framework.
+// This replaces 6 nearly identical framework-specific extraction functions.
+func extractContainerImagesGeneric(job interface{}) []string {
+	if job == nil {
+		return []string{}
 	}
 
-	namespace := metaObj.GetNamespace()
-	name := metaObj.GetName()
-	framework := strings.ToLower(event.Framework)
-
-	image := analyzers.ExtractContainerImage(event.Job, framework)
-	if image != "" {
-		imageAnalysis := analyzers.AnalyzeContainerImage(image)
-		metrics.RecordJobDeletion(framework, imageAnalysis.RHOAIVersion, namespace, name)
+	var images []string
+	jobValue := reflect.ValueOf(job)
+	
+	// Handle pointer types
+	if jobValue.Kind() == reflect.Ptr {
+		jobValue = jobValue.Elem()
+	}
+	
+	if !jobValue.IsValid() {
+		return []string{}
 	}
 
-	klog.V(3).InfoS("Job deletion metrics updated", "namespace", namespace, "name", name, "framework", framework)
+	// Navigate to Spec field
+	specField := jobValue.FieldByName("Spec")
+	if !specField.IsValid() {
+		return []string{}
+	}
+
+	// Look for replica specs field (handles all job types)
+	// Patterns: PyTorchReplicaSpecs, TFReplicaSpecs, XGBReplicaSpecs, etc.
+	specType := specField.Type()
+	for i := 0; i < specField.NumField(); i++ {
+		fieldName := specType.Field(i).Name
+		if strings.HasSuffix(fieldName, "ReplicaSpecs") {
+			replicaSpecs := specField.Field(i)
+			images = append(images, extractImagesFromReplicaSpecs(replicaSpecs)...)
+		}
+	}
+
+	return images
+}
+
+// extractImagesFromReplicaSpecs extracts container images from replica specifications
+func extractImagesFromReplicaSpecs(replicaSpecs reflect.Value) []string {
+	var images []string
+	
+	if replicaSpecs.Kind() != reflect.Map {
+		return images
+	}
+
+	// Iterate through map entries (e.g., master, worker replicas)
+	for _, key := range replicaSpecs.MapKeys() {
+		replicaSpec := replicaSpecs.MapIndex(key)
+		
+		// Handle pointer types
+		if replicaSpec.Kind() == reflect.Ptr {
+			if replicaSpec.IsNil() {
+				continue
+			}
+			replicaSpec = replicaSpec.Elem()
+		}
+
+		// Navigate to Template.Spec.Containers
+		template := replicaSpec.FieldByName("Template")
+		if !template.IsValid() {
+			continue
+		}
+
+		podSpec := template.FieldByName("Spec")
+		if !podSpec.IsValid() {
+			continue
+		}
+
+		containers := podSpec.FieldByName("Containers")
+		if !containers.IsValid() || containers.Kind() != reflect.Slice {
+			continue
+		}
+
+		// Extract images from containers
+		for j := 0; j < containers.Len(); j++ {
+			container := containers.Index(j)
+			imageField := container.FieldByName("Image")
+			if imageField.IsValid() && imageField.Kind() == reflect.String {
+				if image := imageField.String(); image != "" {
+					images = append(images, image)
+				}
+			}
+		}
+	}
+
+	return images
 }

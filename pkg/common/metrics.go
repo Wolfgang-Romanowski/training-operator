@@ -12,82 +12,142 @@
 // See the License for the specific language governing permissions and
 // limitations under the License
 
+// Package common provides shared utilities for training-operator controllers.
+// The metrics functions serve as a compatibility layer that delegates to the
+// telemetry system for RHOAISTRAT-575 compliant business metrics.
 package common
 
 import (
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	"context"
+	"time"
+	
+	"k8s.io/klog/v2"
+	
+	"github.com/kubeflow/training-operator/pkg/telemetry"
 )
 
-// NOTE: These metrics are maintained for backward compatibility.
-// New telemetry metrics are in pkg/telemetry/metrics package.
-// Both metric systems work in parallel to ensure smooth migration.
-
-// Define all the prometheus counters for all jobs
-var (
-	jobsCreatedCount = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_operator_jobs_created_total",
-			Help: "Counts number of jobs created",
-		},
-		[]string{"job_namespace", "framework"},
-	)
-	jobsDeletedCount = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_operator_jobs_deleted_total",
-			Help: "Counts number of jobs deleted",
-		},
-		[]string{"job_namespace", "framework"},
-	)
-	jobsSuccessfulCount = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_operator_jobs_successful_total",
-			Help: "Counts number of jobs successful",
-		},
-		[]string{"job_namespace", "framework"},
-	)
-	jobsFailedCount = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_operator_jobs_failed_total",
-			Help: "Counts number of jobs failed",
-		},
-		[]string{"job_namespace", "framework"},
-	)
-	jobsRestartedCount = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "training_operator_jobs_restarted_total",
-			Help: "Counts number of jobs restarted",
-		},
-		[]string{"job_namespace", "framework"},
-	)
-)
-
-func init() {
-	// Register custom metrics with the global prometheus registry
-	metrics.Registry.MustRegister(jobsCreatedCount,
-		jobsDeletedCount,
-		jobsSuccessfulCount,
-		jobsFailedCount,
-		jobsRestartedCount)
+// CreatedJobsCounterInc reports job creation metrics.
+// This function is maintained for backward compatibility with existing controllers.
+// It delegates to the telemetry system which tracks business-relevant metrics
+// with controlled cardinality per RHOAISTRAT-575 requirements.
+func CreatedJobsCounterInc(jobNamespace, framework string) {
+	if !telemetry.IsTelemetryEnabled() {
+		return
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	event := telemetry.JobEventData{
+		EventType:    telemetry.JobCreatedEvent,
+		Framework:    framework,
+		JobNamespace: jobNamespace,
+	}
+	
+	telemetry.ReceiveJobEvent(ctx, event)
 }
 
-func CreatedJobsCounterInc(job_namespace, framework string) {
-	jobsCreatedCount.WithLabelValues(job_namespace, framework).Inc()
+// DeletedJobsCounterInc reports job deletion metrics.
+// Maintained for backward compatibility, delegates to telemetry system.
+func DeletedJobsCounterInc(jobNamespace, framework string) {
+	if !telemetry.IsTelemetryEnabled() {
+		return
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	event := telemetry.JobEventData{
+		EventType:    telemetry.JobDeletedEvent,
+		Framework:    framework,
+		JobNamespace: jobNamespace,
+	}
+	
+	telemetry.ReceiveJobEvent(ctx, event)
 }
 
-func DeletedJobsCounterInc(job_namespace, framework string) {
-	jobsDeletedCount.WithLabelValues(job_namespace, framework).Inc()
+// SuccessfulJobsCounterInc reports successful job completion metrics.
+// Maintained for backward compatibility, delegates to telemetry system.
+func SuccessfulJobsCounterInc(jobNamespace, framework string) {
+	if !telemetry.IsTelemetryEnabled() {
+		return
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	event := telemetry.JobEventData{
+		EventType:    telemetry.JobCompletedEvent,
+		Framework:    framework,
+		JobNamespace: jobNamespace,
+		Metadata: map[string]string{
+			"succeeded": "true",
+		},
+	}
+	
+	telemetry.ReceiveJobEvent(ctx, event)
 }
 
-func SuccessfulJobsCounterInc(job_namespace, framework string) {
-	jobsSuccessfulCount.WithLabelValues(job_namespace, framework).Inc()
+// FailedJobsCounterInc reports failed job metrics.
+// Maintained for backward compatibility, delegates to telemetry system.
+func FailedJobsCounterInc(jobNamespace, framework string) {
+	if !telemetry.IsTelemetryEnabled() {
+		return
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	event := telemetry.JobEventData{
+		EventType:    telemetry.JobFailedEvent,
+		Framework:    framework,
+		JobNamespace: jobNamespace,
+		Metadata: map[string]string{
+			"succeeded": "false",
+		},
+	}
+	
+	telemetry.ReceiveJobEvent(ctx, event)
 }
 
-func FailedJobsCounterInc(job_namespace, framework string) {
-	jobsFailedCount.WithLabelValues(job_namespace, framework).Inc()
+// RestartedJobsCounterInc reports job restart metrics.
+// Maintained for backward compatibility, delegates to telemetry system.
+func RestartedJobsCounterInc(jobNamespace, framework string) {
+	if !telemetry.IsTelemetryEnabled() {
+		return
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	event := telemetry.JobEventData{
+		EventType:    telemetry.JobStartedEvent,
+		Framework:    framework,
+		JobNamespace: jobNamespace,
+		Metadata: map[string]string{
+			"restarted": "true",
+		},
+	}
+	
+	telemetry.ReceiveJobEvent(ctx, event)
 }
 
-func RestartedJobsCounterInc(job_namespace, framework string) {
-	jobsRestartedCount.WithLabelValues(job_namespace, framework).Inc()
+// ReportJobWithDetails provides a more detailed reporting interface that controllers
+// can use when they have access to the full job object. This enables richer
+// telemetry data collection for business metrics.
+func ReportJobWithDetails(eventType telemetry.EventType, framework string, job interface{}) {
+	if !telemetry.IsTelemetryEnabled() {
+		return
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	event := telemetry.JobEventData{
+		EventType: eventType,
+		Framework: framework,
+		Job:       job,
+	}
+	
+	telemetry.ReceiveJobEvent(ctx, event)
 }

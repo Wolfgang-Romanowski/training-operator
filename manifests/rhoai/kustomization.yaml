@@ -9,7 +9,8 @@ namePrefix: kubeflow-
 resources:
   - ../base
   - kubeflow-training-roles.yaml
-  - monitor-config.yaml              # Correct filename for pod monitor
+  # REMOVED: monitor-config.yaml - Redundant PodMonitor causing duplicate scraping
+  # Metrics are collected via OTEL collector, not direct Prometheus scraping
   - customresourcestatemetrics.yaml  
   - persesdashboard.yaml              # Perses dashboard for telemetry metrics
   - namespace-patch.yaml
@@ -47,8 +48,8 @@ secretGenerator:
   - name: training-operator-telemetry-secret
     options:
       disableNameSuffixHash: true
-    envs:
-      - telemetry-secret.env      # Populated by RHOAI operator at deployment time
+    # NOTE: The RHOAI operator should copy telemetry-secret.env.template
+    # to telemetry-secret.env and populate with actual values at deployment time
   - name: training-operator-webhook-cert
     options:
       disableNameSuffixHash: true

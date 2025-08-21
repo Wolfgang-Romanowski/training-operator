@@ -80,8 +80,9 @@ var (
 // extracts version information, and detects hardware accelerator requirements.
 func AnalyzeContainerImage(image string) ImageAnalysisResult {
 	if image == "" {
+		// CRITICAL FIX: Return "custom" instead of "unknown" to maintain 3 sources max
 		return ImageAnalysisResult{
-			ImageSource:     "unknown",
+			ImageSource:     "custom",
 			RHOAIVersion:    "none",
 			AcceleratorType: "cpu",
 		}
@@ -128,6 +129,7 @@ func AnalyzeContainerImage(image string) ImageAnalysisResult {
 		}
 	}
 
+	// CRITICAL FIX: Map "custom" and "unknown" to "custom" to maintain 3 sources max
 	result.ImageSource = "custom"
 	result.RHOAIVersion = "none"
 	return result

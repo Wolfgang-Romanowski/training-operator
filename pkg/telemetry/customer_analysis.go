@@ -217,40 +217,8 @@ func identifyUsageSource(annotations, labels map[string]string) string {
 	return "api-direct" // Direct API usage (programmatic)
 }
 
-// extractTenantHints is deprecated and returns empty hints for privacy compliance.
-// This function maintains interface compatibility while ensuring no collection
-// of organization or tenant identifying information per Red Hat privacy requirements.
-func extractTenantHints(namespace string, annotations, labels map[string]string) []string {
-	// Always return empty slice to prevent any PII collection
-	return []string{}
-}
-
-// analyzeJobResources analyzes job resource requirements for capacity planning.
-// It categorizes resource usage to understand infrastructure requirements and
-// workload patterns across the cluster.
-func analyzeJobResources(job interface{}) *ResourceInfo {
-	resourceInfo := &ResourceInfo{
-		CPUCategory:    "unknown",
-		MemoryCategory: "unknown",
-		GPUCategory:    "none",
-		StorageType:    "unknown",
-	}
-
-	// Resource analysis implementation would extract actual resource requests/limits
-	// from job specifications based on the specific job type
-
-	// TODO: Implement resource analysis based on job specifications
-	// This would analyze:
-	// - CPU requests/limits from pod specs
-	// - Memory requests/limits from pod specs
-	// - GPU requests from resource requirements
-	// - Storage volume configurations
-
-	// Default categorization until actual resource extraction is implemented
-	resourceInfo.CPUCategory = "medium"    // Default assumption
-	resourceInfo.MemoryCategory = "medium" // Default assumption
-	resourceInfo.GPUCategory = "none"      // Conservative default
-	resourceInfo.StorageType = "local"     // Common default
-
-	return resourceInfo
-}
+// Note: The following functions were removed for production readiness:
+// - extractTenantHints: Removed to ensure privacy compliance (no PII collection)
+// - analyzeJobResources: Removed as it contained only placeholder values
+// These functions are no longer needed as customer classification is handled
+// by the main ClassifyCustomerUsage function above.

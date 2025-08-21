@@ -217,108 +217,136 @@ func ExtractContainerImage(job interface{}, framework string) string {
 	return ""
 }
 
-// ExtractPyTorchImageFromJob extracts the container image from a PyTorchJob.
-// It prioritizes the Master replica image, falling back to Worker replica
-// if Master is not defined.
-func ExtractPyTorchImageFromJob(job *kubeflowv1.PyTorchJob) string {
-	if job == nil || job.Spec.PyTorchReplicaSpecs == nil {
+// ExtractImageFromTrainingJob extracts the container image from any training job type.
+// It uses a generic approach to handle all framework types uniformly, reducing code duplication
+// while maintaining framework-specific logic for replica priority.
+func ExtractImageFromTrainingJob(job interface{}, framework string) string {
+	if job == nil {
 		return ""
 	}
 
-	for _, replicaType := range []kubeflowv1.ReplicaType{
-		kubeflowv1.PyTorchJobReplicaTypeMaster,
-		kubeflowv1.PyTorchJobReplicaTypeWorker,
-	} {
-		if replica, ok := job.Spec.PyTorchReplicaSpecs[replicaType]; ok {
-			if replica != nil && len(replica.Template.Spec.Containers) > 0 {
-				return replica.Template.Spec.Containers[0].Image
+	switch framework {
+	case "pytorch":
+		pytorchJob, ok := job.(*kubeflowv1.PyTorchJob)
+		if !ok || pytorchJob.Spec.PyTorchReplicaSpecs == nil {
+			return ""
+		}
+		// Check Master first, then Worker
+		for _, replicaType := range []kubeflowv1.ReplicaType{
+			kubeflowv1.PyTorchJobReplicaTypeMaster,
+			kubeflowv1.PyTorchJobReplicaTypeWorker,
+		} {
+			if replica, exists := pytorchJob.Spec.PyTorchReplicaSpecs[replicaType]; exists {
+				if image := extractImageFromReplicaSpec(replica); image != "" {
+					return image
+				}
 			}
 		}
+
+	case "tensorflow":
+		tfJob, ok := job.(*kubeflowv1.TFJob)
+		if !ok || tfJob.Spec.TFReplicaSpecs == nil {
+			return ""
+		}
+		// Check Chief first, then Worker
+		for _, replicaType := range []kubeflowv1.ReplicaType{
+			kubeflowv1.TFJobReplicaTypeChief,
+			kubeflowv1.TFJobReplicaTypeWorker,
+		} {
+			if replica, exists := tfJob.Spec.TFReplicaSpecs[replicaType]; exists {
+				if image := extractImageFromReplicaSpec(replica); image != "" {
+					return image
+				}
+			}
+		}
+
+	case "mpi":
+		mpiJob, ok := job.(*kubeflowv1.MPIJob)
+		if !ok || mpiJob.Spec.MPIReplicaSpecs == nil {
+			return ""
+		}
+		if launcher, exists := mpiJob.Spec.MPIReplicaSpecs[kubeflowv1.MPIJobReplicaTypeLauncher]; exists {
+			return extractImageFromReplicaSpec(launcher)
+		}
+
+	case "xgboost":
+		xgboostJob, ok := job.(*kubeflowv1.XGBoostJob)
+		if !ok || xgboostJob.Spec.XGBReplicaSpecs == nil {
+			return ""
+		}
+		if master, exists := xgboostJob.Spec.XGBReplicaSpecs[kubeflowv1.XGBoostJobReplicaTypeMaster]; exists {
+			return extractImageFromReplicaSpec(master)
+		}
+
+	case "paddle":
+		paddleJob, ok := job.(*kubeflowv1.PaddleJob)
+		if !ok || paddleJob.Spec.PaddleReplicaSpecs == nil {
+			return ""
+		}
+		if master, exists := paddleJob.Spec.PaddleReplicaSpecs[kubeflowv1.PaddleJobReplicaTypeMaster]; exists {
+			return extractImageFromReplicaSpec(master)
+		}
+
+	case "jax":
+		jaxJob, ok := job.(*kubeflowv1.JAXJob)
+		if !ok || jaxJob.Spec.JAXReplicaSpecs == nil {
+			return ""
+		}
+		if worker, exists := jaxJob.Spec.JAXReplicaSpecs[kubeflowv1.JAXJobReplicaTypeWorker]; exists {
+			return extractImageFromReplicaSpec(worker)
+		}
+	}
+
+	return ""
+}
+
+// extractImageFromReplicaSpec extracts the container image from a replica specification.
+// This helper function reduces duplication across different job types.
+func extractImageFromReplicaSpec(replica *kubeflowv1.ReplicaSpec) string {
+	if replica != nil && len(replica.Template.Spec.Containers) > 0 {
+		return replica.Template.Spec.Containers[0].Image
 	}
 	return ""
+}
+
+// ExtractPyTorchImageFromJob extracts the container image from a PyTorchJob.
+// Deprecated: Use ExtractImageFromTrainingJob(job, "pytorch") instead.
+// This function is kept for backward compatibility.
+func ExtractPyTorchImageFromJob(job *kubeflowv1.PyTorchJob) string {
+	return ExtractImageFromTrainingJob(job, "pytorch")
 }
 
 // ExtractTensorFlowImageFromJob extracts the container image from a TFJob.
-// It prioritizes the Chief replica image, falling back to Worker replica
-// if Chief is not defined.
+// Deprecated: Use ExtractImageFromTrainingJob(job, "tensorflow") instead.
+// This function is kept for backward compatibility.
 func ExtractTensorFlowImageFromJob(job *kubeflowv1.TFJob) string {
-	if job == nil || job.Spec.TFReplicaSpecs == nil {
-		return ""
-	}
-
-	for _, replicaType := range []kubeflowv1.ReplicaType{
-		kubeflowv1.TFJobReplicaTypeChief,
-		kubeflowv1.TFJobReplicaTypeWorker,
-	} {
-		if replica, ok := job.Spec.TFReplicaSpecs[replicaType]; ok {
-			if replica != nil && len(replica.Template.Spec.Containers) > 0 {
-				return replica.Template.Spec.Containers[0].Image
-			}
-		}
-	}
-	return ""
+	return ExtractImageFromTrainingJob(job, "tensorflow")
 }
 
 // ExtractMPIImageFromJob extracts the container image from an MPIJob.
-// It retrieves the image from the Launcher replica which coordinates
-// the MPI job execution.
+// Deprecated: Use ExtractImageFromTrainingJob(job, "mpi") instead.
+// This function is kept for backward compatibility.
 func ExtractMPIImageFromJob(job *kubeflowv1.MPIJob) string {
-	if job == nil || job.Spec.MPIReplicaSpecs == nil {
-		return ""
-	}
-
-	if launcher, ok := job.Spec.MPIReplicaSpecs[kubeflowv1.MPIJobReplicaTypeLauncher]; ok {
-		if launcher != nil && len(launcher.Template.Spec.Containers) > 0 {
-			return launcher.Template.Spec.Containers[0].Image
-		}
-	}
-	return ""
+	return ExtractImageFromTrainingJob(job, "mpi")
 }
 
 // ExtractXGBoostImageFromJob extracts the container image from an XGBoostJob.
-// It retrieves the image from the Master replica which coordinates
-// the distributed XGBoost training.
+// Deprecated: Use ExtractImageFromTrainingJob(job, "xgboost") instead.
+// This function is kept for backward compatibility.
 func ExtractXGBoostImageFromJob(job *kubeflowv1.XGBoostJob) string {
-	if job == nil || job.Spec.XGBReplicaSpecs == nil {
-		return ""
-	}
-
-	if master, ok := job.Spec.XGBReplicaSpecs[kubeflowv1.XGBoostJobReplicaTypeMaster]; ok {
-		if master != nil && len(master.Template.Spec.Containers) > 0 {
-			return master.Template.Spec.Containers[0].Image
-		}
-	}
-	return ""
+	return ExtractImageFromTrainingJob(job, "xgboost")
 }
 
 // ExtractPaddleImageFromJob extracts the container image from a PaddleJob.
-// It retrieves the image from the Master replica which coordinates
-// the PaddlePaddle distributed training.
+// Deprecated: Use ExtractImageFromTrainingJob(job, "paddle") instead.
+// This function is kept for backward compatibility.
 func ExtractPaddleImageFromJob(job *kubeflowv1.PaddleJob) string {
-	if job == nil || job.Spec.PaddleReplicaSpecs == nil {
-		return ""
-	}
-
-	if master, ok := job.Spec.PaddleReplicaSpecs[kubeflowv1.PaddleJobReplicaTypeMaster]; ok {
-		if master != nil && len(master.Template.Spec.Containers) > 0 {
-			return master.Template.Spec.Containers[0].Image
-		}
-	}
-	return ""
+	return ExtractImageFromTrainingJob(job, "paddle")
 }
 
 // ExtractJAXImageFromJob extracts the container image from a JAXJob.
-// It retrieves the image from the Worker replica since JAX jobs
-// typically use a symmetric worker configuration.
+// Deprecated: Use ExtractImageFromTrainingJob(job, "jax") instead.
+// This function is kept for backward compatibility.
 func ExtractJAXImageFromJob(job *kubeflowv1.JAXJob) string {
-	if job == nil || job.Spec.JAXReplicaSpecs == nil {
-		return ""
-	}
-
-	if worker, ok := job.Spec.JAXReplicaSpecs[kubeflowv1.JAXJobReplicaTypeWorker]; ok {
-		if worker != nil && len(worker.Template.Spec.Containers) > 0 {
-			return worker.Template.Spec.Containers[0].Image
-		}
-	}
-	return ""
+	return ExtractImageFromTrainingJob(job, "jax")
 }

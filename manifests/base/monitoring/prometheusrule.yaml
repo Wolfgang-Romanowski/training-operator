@@ -21,20 +21,44 @@ spec:
     # Business-focused metrics for deprecation and adoption decisions
     # =========================================================
     
+    # PRE-AGGREGATION: Remove high-cardinality labels before telemetry export
+    # These rules ensure we stay within Red Hat's 10 timeseries limit
+    
+    # Aggregate version usage removing pod/instance/namespace labels
+    - record: training:image_version_usage_aggregated
+      expr: |
+        sum without (pod, instance, namespace, job, endpoint) (
+          training_operator_image_version_usage
+        )
+    
+    # Aggregate source preference removing all high-cardinality labels  
+    - record: training:image_source_preference_aggregated
+      expr: |
+        sum without (pod, instance, namespace, job, endpoint) (
+          rate(training_operator_image_source_preference_total[5m])
+        )
+    
+    # Aggregate enterprise adoption removing all high-cardinality labels
+    - record: training:enterprise_adoption_aggregated
+      expr: |
+        sum without (pod, instance, namespace, job, endpoint) (
+          rate(training_operator_enterprise_adoption_total[5m])
+        )
+    
     # METRIC 1: Version Deprecation Analysis
     # Business Question: Can we deprecate PyTorch 2.4 or TensorFlow 2.14?
     - record: openshift:training_version_deprecation_analysis
       expr: |
-        sum by (version) (training_operator_image_version_usage{version=~"pytorch-2\\.[34]|tensorflow-2\\.1[45]|other"})
+        sum by (version) (training:image_version_usage_aggregated{version=~"pytorch-2\\.[34]|tensorflow-2\\.1[45]|other"})
     
     # METRIC 2: RHOAI Adoption Rate
     # Business Question: What % of jobs use RHOAI official images?
     - record: openshift:training_rhoai_adoption_rate
       expr: |
         (
-          sum(rate(training_operator_image_source_preference_total{image_source="rhoai_official"}[5m]))
+          sum(training:image_source_preference_aggregated{image_source="rhoai_official"})
           /
-          sum(rate(training_operator_image_source_preference_total[5m]))
+          sum(training:image_source_preference_aggregated)
         ) * 100 or vector(0)
     
     # METRIC 3: Enterprise vs Non-Enterprise Split
@@ -42,9 +66,9 @@ spec:
     - record: openshift:training_enterprise_percentage
       expr: |
         (
-          sum(rate(training_operator_enterprise_adoption_total{customer_type="enterprise"}[5m]))
+          sum(training:enterprise_adoption_aggregated{customer_type="enterprise"})
           /
-          sum(rate(training_operator_enterprise_adoption_total[5m]))
+          sum(training:enterprise_adoption_aggregated)
         ) * 100 or vector(0)
 
   - name: training_operator.alerts

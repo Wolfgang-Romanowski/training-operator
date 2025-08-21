@@ -17,6 +17,8 @@ package telemetry
 import (
 	"context"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -28,6 +30,14 @@ var (
 	initOnce         sync.Once
 	telemetryEnabled bool
 	isInitialized    bool
+	eventQueue       chan JobEventData
+	eventQueueSize   = 1000
+	workerCount      = 3
+	droppedEvents    int64
+	processedEvents  int64
+	queueMutex       sync.RWMutex
+	workersRunning   bool
+	shutdownChan     chan struct{}
 )
 
 // EventType represents different lifecycle events for training jobs.
@@ -79,6 +89,11 @@ func InitializeTelemetryReceiver() error {
 			return
 		}
 
+		// Initialize event queue and start workers
+		eventQueue = make(chan JobEventData, eventQueueSize)
+		shutdownChan = make(chan struct{})
+		startEventWorkers()
+
 		isInitialized = true
 		klog.Info("Telemetry event receiver initialized successfully")
 	})
@@ -119,8 +134,8 @@ func ReportJobCreation(job interface{}, framework string) {
 		Job:       job,
 	}
 
-	ctx := context.Background()
-	convertEventToMetrics(ctx, event)
+	// Use non-blocking queue submission
+	submitEventToQueue(event)
 }
 
 // ReportJobStarted processes a training job started event.
@@ -137,8 +152,8 @@ func ReportJobStarted(job interface{}, framework string) {
 		Job:       job,
 	}
 
-	ctx := context.Background()
-	convertEventToMetrics(ctx, event)
+	// Use non-blocking queue submission
+	submitEventToQueue(event)
 }
 
 // ReportJobCompletion processes a training job completion event.
@@ -160,8 +175,8 @@ func ReportJobCompletion(job interface{}, framework string, succeeded bool) {
 		Job:       job,
 	}
 
-	ctx := context.Background()
-	convertEventToMetrics(ctx, event)
+	// Use non-blocking queue submission
+	submitEventToQueue(event)
 }
 
 // ReportJobFailure processes a training job failure event.
@@ -181,8 +196,8 @@ func ReportJobFailure(job interface{}, framework string, reason string) {
 		},
 	}
 
-	ctx := context.Background()
-	convertEventToMetrics(ctx, event)
+	// Use non-blocking queue submission
+	submitEventToQueue(event)
 }
 
 // ReportJobDeletion processes a training job deletion event.
@@ -199,8 +214,8 @@ func ReportJobDeletion(job interface{}, framework string) {
 		Job:       job,
 	}
 
-	ctx := context.Background()
-	convertEventToMetrics(ctx, event)
+	// Use non-blocking queue submission
+	submitEventToQueue(event)
 }
 
 // ReceiveJobEvent processes job events for backward compatibility.
@@ -211,5 +226,146 @@ func ReceiveJobEvent(ctx context.Context, event JobEventData) {
 		return
 	}
 
+	// Use non-blocking queue submission
+	submitEventToQueue(event)
+}
+
+// startEventWorkers starts the background workers that process events from the queue.
+// This enables non-blocking event processing and prevents telemetry collection
+// from impacting the main controller operations.
+func startEventWorkers() {
+	queueMutex.Lock()
+	defer queueMutex.Unlock()
+
+	if workersRunning {
+		return
+	}
+
+	workersRunning = true
+	for i := 0; i < workerCount; i++ {
+		go eventWorker(i)
+	}
+
+	klog.InfoS("Started telemetry event workers", "count", workerCount)
+}
+
+// eventWorker processes events from the queue with retry logic.
+// Each worker runs in its own goroutine to enable parallel processing
+// of telemetry events without blocking the main application.
+func eventWorker(workerID int) {
+	klog.V(4).InfoS("Event worker started", "workerID", workerID)
+
+	for {
+		select {
+		case event := <-eventQueue:
+			processEventWithRetry(event, workerID)
+			atomic.AddInt64(&processedEvents, 1)
+
+		case <-shutdownChan:
+			klog.V(4).InfoS("Event worker shutting down", "workerID", workerID)
+			return
+		}
+	}
+}
+
+// processEventWithRetry processes an event with exponential backoff retry.
+// This ensures temporary failures don't cause permanent data loss while
+// preventing infinite retry loops that could consume resources.
+func processEventWithRetry(event JobEventData, workerID int) {
+	ctx := context.Background()
+	maxRetries := 3
+	backoffDuration := 100 * time.Millisecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := processEventSafely(ctx, event)
+		if err == nil {
+			return
+		}
+
+		if attempt < maxRetries-1 {
+			klog.V(4).InfoS("Event processing failed, retrying",
+				"workerID", workerID,
+				"attempt", attempt+1,
+				"error", err)
+			time.Sleep(backoffDuration)
+			backoffDuration *= 2
+		} else {
+			klog.ErrorS(err, "Event processing failed after all retries",
+				"workerID", workerID,
+				"eventType", event.EventType,
+				"framework", event.Framework)
+		}
+	}
+}
+
+// processEventSafely wraps event processing with panic recovery.
+// This prevents a single malformed event from crashing the entire
+// telemetry collection system.
+func processEventSafely(ctx context.Context, event JobEventData) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			klog.ErrorS(nil, "Panic recovered in event processing",
+				"panic", r,
+				"eventType", event.EventType,
+				"framework", event.Framework)
+			err = nil // Don't retry on panic
+		}
+	}()
+
 	convertEventToMetrics(ctx, event)
+	return nil
+}
+
+// submitEventToQueue submits an event to the processing queue without blocking.
+// If the queue is full, the event is dropped and a counter is incremented
+// to track data loss for monitoring purposes.
+func submitEventToQueue(event JobEventData) {
+	select {
+	case eventQueue <- event:
+		// Event successfully queued
+	default:
+		// Queue is full, drop the event
+		atomic.AddInt64(&droppedEvents, 1)
+		if atomic.LoadInt64(&droppedEvents)%100 == 0 {
+			klog.WarningS("Events are being dropped due to queue overflow",
+				"droppedTotal", atomic.LoadInt64(&droppedEvents))
+		}
+	}
+}
+
+// ShutdownTelemetryReceiver gracefully shuts down the telemetry system.
+// It stops accepting new events and waits for existing events to be processed
+// before returning.
+func ShutdownTelemetryReceiver() {
+	queueMutex.Lock()
+	defer queueMutex.Unlock()
+
+	if !workersRunning {
+		return
+	}
+
+	klog.Info("Shutting down telemetry event receiver")
+
+	// Close shutdown channel to signal workers
+	close(shutdownChan)
+
+	// Give workers time to process remaining events
+	time.Sleep(2 * time.Second)
+
+	workersRunning = false
+	klog.InfoS("Telemetry event receiver shutdown complete",
+		"processedEvents", atomic.LoadInt64(&processedEvents),
+		"droppedEvents", atomic.LoadInt64(&droppedEvents))
+}
+
+// GetTelemetryQueueStats returns statistics about the event queue.
+// This is useful for monitoring the health of the telemetry system
+// and detecting performance issues.
+func GetTelemetryQueueStats() map[string]int64 {
+	return map[string]int64{
+		"queueSize":       int64(len(eventQueue)),
+		"queueCapacity":   int64(eventQueueSize),
+		"processedEvents": atomic.LoadInt64(&processedEvents),
+		"droppedEvents":   atomic.LoadInt64(&droppedEvents),
+	}
 }

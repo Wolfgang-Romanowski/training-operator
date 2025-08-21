@@ -27,21 +27,21 @@ spec:
     # Aggregate version usage removing pod/instance/namespace labels
     - record: training:image_version_usage_aggregated
       expr: |
-        sum without (pod, instance, namespace, job, endpoint) (
+        sum without (pod, instance, namespace, job, endpoint, container, service) (
           training_operator_image_version_usage
         )
     
     # Aggregate source preference removing all high-cardinality labels  
     - record: training:image_source_preference_aggregated
       expr: |
-        sum without (pod, instance, namespace, job, endpoint) (
+        sum without (pod, instance, namespace, job, endpoint, container, service) (
           rate(training_operator_image_source_preference_total[5m])
         )
     
     # Aggregate enterprise adoption removing all high-cardinality labels
     - record: training:enterprise_adoption_aggregated
       expr: |
-        sum without (pod, instance, namespace, job, endpoint) (
+        sum without (pod, instance, namespace, job, endpoint, container, service) (
           rate(training_operator_enterprise_adoption_total[5m])
         )
     
@@ -49,7 +49,9 @@ spec:
     # Business Question: Can we deprecate PyTorch 2.4 or TensorFlow 2.14?
     - record: openshift:training_version_deprecation_analysis
       expr: |
-        sum by (version) (training:image_version_usage_aggregated{version=~"pytorch-2\\.[34]|tensorflow-2\\.1[45]|other"})
+        sum by (version) (
+          training:image_version_usage_aggregated{version=~"pytorch-2\\.[34]|tensorflow-2\\.1[45]|other"}
+        ) or vector(0)
     
     # METRIC 2: RHOAI Adoption Rate
     # Business Question: What % of jobs use RHOAI official images?

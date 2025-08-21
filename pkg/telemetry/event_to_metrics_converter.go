@@ -34,6 +34,12 @@ func convertEventToMetrics(ctx context.Context, event JobEventData) {
 		return
 	}
 
+	// Check circuit breaker before processing
+	if metrics.IsCircuitBreakerOpen() {
+		klog.V(5).Info("Circuit breaker open, skipping event conversion to metrics")
+		return
+	}
+
 	processCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

@@ -127,6 +127,9 @@ func initializeCRDInstanceTracking() {
 	// Start background cleanup and monitoring routines
 	go getImageVersionTracker().cleanupRoutine()
 	go getImageVersionTracker().cardinalityMonitor()
+	
+	// Start circuit breaker monitor for cardinality protection
+	StartCircuitBreakerMonitor()
 
 	klog.Info("CRD instance tracking metrics initialized")
 }

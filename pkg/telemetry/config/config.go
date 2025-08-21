@@ -447,3 +447,41 @@ func extractTelemetryTokenFromPullSecret(ctx context.Context, kubeClient kuberne
 
 	return "", fmt.Errorf("no telemetry token found in pull secret")
 }
+
+// GetTelemetryURL returns the configured telemetry endpoint URL.
+// This is the URL where telemetry data will be sent.
+func GetTelemetryURL() string {
+	if config == nil {
+		Initialize()
+	}
+	if config.Endpoint != "" {
+		return config.Endpoint
+	}
+	return "https://infogw.api.openshift.com/metrics/v1/receive"
+}
+
+// IsTelemetrySecretConfigured checks if the telemetry authentication secret is configured.
+// Returns true if a valid token has been configured for telemetry export.
+func IsTelemetrySecretConfigured() bool {
+	if config == nil {
+		Initialize()
+	}
+	return config.Token != ""
+}
+
+// GetTelemetryNamespace returns the namespace where telemetry components are deployed.
+// This is typically the namespace where the training operator is running.
+func GetTelemetryNamespace() string {
+	namespace := os.Getenv("TELEMETRY_NAMESPACE")
+	if namespace != "" {
+		return namespace
+	}
+	
+	// Try to get the namespace from the pod's service account
+	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	
+	// Default to redhat-ods-applications for RHOAI deployments
+	return "redhat-ods-applications"
+}

@@ -22,6 +22,12 @@ import (
 // This tracks reconciliation failures to identify controllers that may need
 // attention or debugging.
 func RecordReconcileError(controller string) {
+	// Check circuit breaker first
+	if IsCircuitBreakerOpen() {
+		klog.V(5).Info("Circuit breaker open, skipping metric update")
+		return
+	}
+
 	reg := Get()
 	if reg == nil {
 		klog.Warning("Metrics registry not available for recording reconcile error")
@@ -40,6 +46,12 @@ func RecordReconcileError(controller string) {
 // The duration is measured in seconds and helps identify performance bottlenecks
 // in the reconciliation loop.
 func RecordReconcileDuration(controller string, duration float64) {
+	// Check circuit breaker first
+	if IsCircuitBreakerOpen() {
+		klog.V(5).Info("Circuit breaker open, skipping metric update")
+		return
+	}
+
 	reg := Get()
 	if reg == nil {
 		klog.Warning("Metrics registry not available for recording reconcile duration")
@@ -58,6 +70,12 @@ func RecordReconcileDuration(controller string, duration float64) {
 // It tracks unexpected errors in specific components with detailed reason codes
 // to help diagnose systemic issues.
 func RecordInternalFailure(component, reason string) {
+	// Check circuit breaker first
+	if IsCircuitBreakerOpen() {
+		klog.V(5).Info("Circuit breaker open, skipping metric update")
+		return
+	}
+
 	reg := Get()
 	if reg == nil {
 		klog.Warning("Metrics registry not available for recording internal failure")

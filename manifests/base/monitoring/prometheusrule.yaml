@@ -24,53 +24,56 @@ spec:
     # PRE-AGGREGATION: Remove high-cardinality labels before telemetry export
     # These rules ensure we stay within Red Hat's 10 timeseries limit
     
-    # Aggregate version usage removing pod/instance/namespace labels
-    - record: training:image_version_usage_aggregated
+    # Aggregate runtime adoption (combines version+source intelligently)
+    - record: training:runtime_adoption_aggregated
       expr: |
         sum without (pod, instance, namespace, job, endpoint, container, service) (
-          training_operator_image_version_usage
+          training_operator_runtime_adoption
         )
     
-    # Aggregate source preference removing all high-cardinality labels  
-    - record: training:image_source_preference_aggregated
+    # Aggregate customer segmentation  
+    - record: training:customer_segment_aggregated
       expr: |
         sum without (pod, instance, namespace, job, endpoint, container, service) (
-          rate(training_operator_image_source_preference_total[5m])
+          rate(training_operator_customer_segment_total[5m])
         )
     
-    # Aggregate enterprise adoption removing all high-cardinality labels
-    - record: training:enterprise_adoption_aggregated
+    # Aggregate framework usage
+    - record: training:framework_usage_aggregated
       expr: |
         sum without (pod, instance, namespace, job, endpoint, container, service) (
-          rate(training_operator_enterprise_adoption_total[5m])
+          rate(training_operator_framework_usage_total[5m])
         )
     
-    # METRIC 1: Version Deprecation Analysis
+    # METRIC 1: Version Deprecation Analysis (extracts version from runtime label)
     # Business Question: Can we deprecate PyTorch 2.4 or TensorFlow 2.14?
-    - record: openshift:training_version_deprecation_analysis
+    - record: openshift:training_operator_version_usage
       expr: |
-        sum by (version) (
-          training:image_version_usage_aggregated{version=~"pytorch-2\\.[34]|tensorflow-2\\.1[45]|other"}
-        ) or vector(0)
+        sum (
+          label_replace(
+            training:runtime_adoption_aggregated,
+            "version", "$1", "runtime", "(pytorch-2\\.4|pytorch-2\\.5|tensorflow-2\\.14|tensorflow-2\\.15|other).*"
+          )
+        ) by (version) or vector(0)
     
-    # METRIC 2: RHOAI Adoption Rate
+    # METRIC 2: RHOAI Adoption Rate (extracts from runtime label)
     # Business Question: What % of jobs use RHOAI official images?
-    - record: openshift:training_rhoai_adoption_rate
+    - record: openshift:training_operator_image_preference
       expr: |
         (
-          sum(training:image_source_preference_aggregated{image_source="rhoai_official"})
+          sum(training:runtime_adoption_aggregated{runtime=~".*-rhoai"})
           /
-          sum(training:image_source_preference_aggregated)
+          sum(training:runtime_adoption_aggregated)
         ) * 100 or vector(0)
     
     # METRIC 3: Enterprise vs Non-Enterprise Split
     # Business Question: Are enterprise customers adopting RHOAI?
-    - record: openshift:training_enterprise_percentage
+    - record: openshift:training_operator_customer_type
       expr: |
         (
-          sum(training:enterprise_adoption_aggregated{customer_type="enterprise"})
+          sum(training:customer_segment_aggregated{segment="enterprise"})
           /
-          sum(training:enterprise_adoption_aggregated)
+          sum(training:customer_segment_aggregated)
         ) * 100 or vector(0)
 
   - name: training_operator.alerts
@@ -79,7 +82,7 @@ spec:
     # Business-focused alerts for product decisions
     - alert: TrainingOperatorOldVersionHighUsage
       expr: |
-        training_operator_image_version_usage{version=~"pytorch-2.[34]|tensorflow-2.1[45]"} > 10
+        openshift:training_operator_version_usage{version=~"pytorch-2.4|tensorflow-2.14"} > 10
       for: 24h
       labels:
         severity: info
@@ -92,7 +95,7 @@ spec:
         
     - alert: TrainingOperatorLowRHOAIAdoption
       expr: |
-        openshift:training_rhoai_adoption_rate < 30
+        openshift:training_operator_image_preference < 30
       for: 12h
       labels:
         severity: info
@@ -105,7 +108,7 @@ spec:
         
     - alert: TrainingOperatorNoEnterpriseAdoption
       expr: |
-        openshift:training_enterprise_percentage < 10
+        openshift:training_operator_customer_type < 10
       for: 24h
       labels:
         severity: warning
@@ -197,7 +200,7 @@ spec:
     
     - alert: TrainingOperatorVersionSkew
       expr: |
-        abs(delta(training_operator_image_version_usage[1h])) > 5
+        abs(delta(openshift:training_operator_version_usage[1h])) > 5
       for: 30m
       labels:
         severity: info

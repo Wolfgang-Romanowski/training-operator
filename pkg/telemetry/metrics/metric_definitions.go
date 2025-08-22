@@ -27,41 +27,44 @@ import (
 )
 
 var (
-	// TrainingOperatorImageVersionUsage tracks active training jobs by RHOAI runtime version
-	// for deprecation analysis and version adoption monitoring.
-	TrainingOperatorImageVersionUsage = prometheus.NewGaugeVec(
+	// METRIC 1: Version + Source Combined (5 timeseries max)
+	// Answers: "Can we deprecate PyTorch 2.4?" AND "Are they using RHOAI images?"
+	// Smart design: Combines version+source in single label to get both insights
+	TrainingOperatorRuntimeAdoption = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "training_operator_image_version_usage",
-			Help: "Active training jobs by RHOAI runtime version for deprecation analysis",
+			Name: "training_operator_runtime_adoption",
+			Help: "Active jobs by runtime version and source (e.g. pytorch-2.4-rhoai, tensorflow-2.15-community)",
 		},
-		[]string{"version"},
+		[]string{"runtime"}, // Combined: "pytorch-2.4-rhoai", "pytorch-2.5-custom", etc.
 	)
 
-	// TrainingOperatorImageSourcePreference tracks total jobs by image source to understand
-	// customer runtime preferences between RHOAI official, community, and custom images.
-	TrainingOperatorImageSourcePreference = prometheus.NewCounterVec(
+	// METRIC 2: Customer Segmentation (2 timeseries max)
+	// Answers: "Are enterprise customers adopting RHOAI?"
+	// Smart design: Binary classification keeps cardinality at 2
+	TrainingOperatorCustomerSegment = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "training_operator_image_source_preference_total",
-			Help: "Total jobs by image source showing customer runtime preferences",
+			Name: "training_operator_customer_segment_total",
+			Help: "Total jobs by customer segment (enterprise vs non-enterprise)",
 		},
-		[]string{"image_source"},
+		[]string{"segment"}, // Only "enterprise" or "non-enterprise"
 	)
 
-	// TrainingOperatorEnterpriseAdoption differentiates enterprise vs non-enterprise adoption
-	// of RHOAI runtimes for customer segmentation analysis.
-	TrainingOperatorEnterpriseAdoption = prometheus.NewCounterVec(
+	// METRIC 3: Framework Distribution (3 timeseries max)
+	// Answers: "Which ML frameworks are most popular?"
+	// Smart design: High-level framework view without version details
+	TrainingOperatorFrameworkUsage = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "training_operator_enterprise_adoption_total",
-			Help: "Enterprise vs non-enterprise adoption of RHOAI runtimes",
+			Name: "training_operator_framework_usage_total",
+			Help: "Total jobs by ML framework type",
 		},
-		[]string{"customer_type"},
+		[]string{"framework"}, // "pytorch", "tensorflow", "other"
 	)
 
 	// imageVersionTracker manages the lifecycle of active version tracking with automatic
 	// cleanup and cardinality management to comply with Red Hat monitoring limits.
 	imageVersionTracker = &ImageVersionTracker{
 		activeVersions:  make(map[string]*VersionData),
-		topVersions:     make(map[string]int),
+		versionCounts:   make(map[string]int),
 		mu:              sync.RWMutex{},
 		cleanupInterval: 1 * time.Hour,
 		maxAge:          24 * time.Hour,
@@ -73,8 +76,8 @@ var (
 // and cardinality limits to ensure compliance with Red Hat monitoring requirements.
 type ImageVersionTracker struct {
 	mu              sync.RWMutex
-	activeVersions  map[string]*VersionData // key: version/namespace/name
-	topVersions     map[string]int          // Track top 5 versions only for cardinality control
+	activeVersions  map[string]*VersionData // key: namespace/name (no version prefix to avoid explosion)
+	versionCounts   map[string]int          // Aggregate counts by version only
 	cleanupInterval time.Duration
 	maxAge          time.Duration
 	maxEntries      int
@@ -89,7 +92,7 @@ func getImageVersionTracker() *ImageVersionTracker {
 // initializeVersion sets up tracking for a specific version.
 // This method is used during initialization to prepare version tracking.
 func (ivt *ImageVersionTracker) initializeVersion(version string) {
-	ivt.topVersions[version] = 0
+	ivt.versionCounts[version] = 0
 }
 
 // VersionData contains metadata about a tracked training job version including
@@ -105,25 +108,39 @@ type VersionData struct {
 // Customer classification logic is imported from the telemetry package to avoid duplication.
 // CustomerInfo and ResourceInfo are defined in pkg/telemetry/customer_analysis.go
 
-// GetTrackedVersions returns the list of tracked versions for external use.
-// These versions align with RHOAI supported runtime versions and recording rules.
+// GetTrackedVersions returns the base versions we track (without source suffix).
+// Used for version normalization logic.
 func GetTrackedVersions() []string {
 	return []string{
 		"pytorch-2.4",
-		"pytorch-2.3",
+		"pytorch-2.5",
 		"tensorflow-2.15",
 		"tensorflow-2.14",
 		"other",
 	}
 }
 
+// GetTrackedRuntimes returns the smart composite runtime labels.
+// These combine version+source to maximize information density.
+func GetTrackedRuntimes() []string {
+	return []string{
+		"pytorch-2.4-rhoai", "pytorch-2.4-external",
+		"pytorch-2.5-rhoai", "pytorch-2.5-external",
+		"other", // No source differentiation for "other"
+	}
+}
+
 // RecordJobCreation records metrics when a new training job is created.
-// It tracks image version usage, source preferences, and enterprise adoption patterns
-// while maintaining cardinality limits per Red Hat monitoring requirements.
+// Uses smart composite labels to maximize information density within cardinality limits.
 func RecordJobCreation(framework, version, imageSource, customerType, namespace, name string) {
 	normalizedVersion := normalizeVersionForTracking(framework, version)
-	key := normalizedVersion + "/" + namespace + "/" + name
-
+	validatedSource := validateImageSourceForCardinality(imageSource)
+	
+	// SMART METRIC 1: Combine version+source into single runtime label
+	// This gives us BOTH pieces of info in 5 timeseries instead of 8 separate ones
+	runtimeLabel := createCompositeRuntimeLabel(normalizedVersion, validatedSource)
+	
+	key := namespace + "/" + name
 	tracker := getImageVersionTracker()
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
@@ -134,30 +151,39 @@ func RecordJobCreation(framework, version, imageSource, customerType, namespace,
 
 	isNew := false
 	if existing, ok := tracker.activeVersions[key]; ok {
+		// Job already exists, check if runtime changed
+		oldRuntime := createCompositeRuntimeLabel(existing.Version, existing.ImageSource)
+		if oldRuntime != runtimeLabel {
+			// Runtime changed, update counts
+			if tracker.versionCounts[oldRuntime] > 0 {
+				tracker.versionCounts[oldRuntime]--
+				TrainingOperatorRuntimeAdoption.WithLabelValues(oldRuntime).Dec()
+			}
+			tracker.versionCounts[runtimeLabel]++
+			TrainingOperatorRuntimeAdoption.WithLabelValues(runtimeLabel).Inc()
+			existing.Version = normalizedVersion
+			existing.ImageSource = validatedSource
+		}
 		existing.LastUpdated = time.Now()
 	} else {
 		isNew = true
 		tracker.activeVersions[key] = &VersionData{
 			Version:      normalizedVersion,
-			ImageSource:  imageSource,
+			ImageSource:  validatedSource,
 			CustomerType: customerType,
 			JobCount:     1,
 			LastUpdated:  time.Now(),
 		}
-	}
+		tracker.versionCounts[runtimeLabel]++
+		TrainingOperatorRuntimeAdoption.WithLabelValues(runtimeLabel).Inc()
 
-	if isNew {
-		tracker.topVersions[normalizedVersion]++
-		TrainingOperatorImageVersionUsage.WithLabelValues(normalizedVersion).Inc()
+		// SMART METRIC 2: Customer segmentation (binary for low cardinality)
+		segment := simplifyCustomerTypeForClassification(customerType)
+		TrainingOperatorCustomerSegment.WithLabelValues(segment).Inc()
 
-		// CRITICAL: Validate image source to maintain 3 values max
-		validatedImageSource := validateImageSourceForCardinality(imageSource)
-		TrainingOperatorImageSourcePreference.WithLabelValues(validatedImageSource).Inc()
-
-		if validatedImageSource == "rhoai_official" {
-			simplifiedCustomerType := simplifyCustomerTypeForClassification(customerType)
-			TrainingOperatorEnterpriseAdoption.WithLabelValues(simplifiedCustomerType).Inc()
-		}
+		// SMART METRIC 3: High-level framework tracking
+		frameworkType := extractFrameworkType(framework, normalizedVersion)
+		TrainingOperatorFrameworkUsage.WithLabelValues(frameworkType).Inc()
 
 		klog.V(4).InfoS("Recorded job creation",
 			"version", normalizedVersion,
@@ -171,24 +197,28 @@ func RecordJobCreation(framework, version, imageSource, customerType, namespace,
 }
 
 // RecordJobDeletion decrements job tracking metrics when a training job is deleted.
-// This ensures accurate active job counts and prevents metric drift over time.
+// Uses composite runtime labels to maintain consistency with RecordJobCreation.
 func RecordJobDeletion(framework, version, namespace, name string) {
-	normalizedVersion := normalizeVersionForTracking(framework, version)
-	key := normalizedVersion + "/" + namespace + "/" + name
+	key := namespace + "/" + name
 
 	tracker := getImageVersionTracker()
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 
-	if _, ok := tracker.activeVersions[key]; ok {
-		if tracker.topVersions[normalizedVersion] > 0 {
-			tracker.topVersions[normalizedVersion]--
-			TrainingOperatorImageVersionUsage.WithLabelValues(normalizedVersion).Dec()
+	if data, ok := tracker.activeVersions[key]; ok {
+		// Use stored values to construct the composite runtime label
+		runtimeLabel := createCompositeRuntimeLabel(data.Version, data.ImageSource)
+		if tracker.versionCounts[runtimeLabel] > 0 {
+			tracker.versionCounts[runtimeLabel]--
+			TrainingOperatorRuntimeAdoption.WithLabelValues(runtimeLabel).Dec()
 		}
 
 		delete(tracker.activeVersions, key)
 
-		klog.V(4).InfoS("Recorded job deletion", "version", normalizedVersion, "namespace", namespace, "name", name)
+		klog.V(4).InfoS("Recorded job deletion", 
+			"runtime", runtimeLabel, 
+			"namespace", namespace, 
+			"name", name)
 	}
 }
 
@@ -231,10 +261,37 @@ func GetMetricsSummary() map[string]interface{} {
 	return map[string]interface{}{
 		"active_jobs":      len(tracker.activeVersions),
 		"tracked_versions": GetTrackedVersions(),
-		"version_counts":   tracker.topVersions,
+		"version_counts":   tracker.versionCounts,
 		"max_timeseries":   10,
 		"metrics_count":    3,
 	}
+}
+
+// createCompositeRuntimeLabel combines version and source into a single label.
+// This maximizes information density: "pytorch-2.4-rhoai" tells us both version AND source.
+// Maximum 5 combinations to stay within cardinality limits.
+func createCompositeRuntimeLabel(version, source string) string {
+	// Smart compression: only track RHOAI vs non-RHOAI for versions we care about
+	if version == "other" {
+		return "other" // Don't differentiate source for "other" versions
+	}
+	
+	if source == "rhoai_official" {
+		return version + "-rhoai"
+	}
+	return version + "-external" // Combine community+custom as "external"
+}
+
+// extractFrameworkType returns high-level framework category.
+// This gives us framework popularity without version cardinality explosion.
+func extractFrameworkType(framework, normalizedVersion string) string {
+	if strings.Contains(normalizedVersion, "pytorch") {
+		return "pytorch"
+	}
+	if strings.Contains(normalizedVersion, "tensorflow") {
+		return "tensorflow"
+	}
+	return "other"
 }
 
 // normalizeVersionForTracking maps framework versions to tracked categories.
@@ -253,11 +310,11 @@ func normalizeVersionForTracking(framework, version string) string {
 	// Normalize PyTorch versions to match recording rule regex patterns
 	versionLower := strings.ToLower(version)
 	if strings.Contains(versionLower, "pytorch") {
+		if strings.Contains(version, "2.5") || strings.Contains(version, "2-5") || strings.Contains(version, "250") {
+			return "pytorch-2.5"
+		}
 		if strings.Contains(version, "2.4") || strings.Contains(version, "2-4") || strings.Contains(version, "241") {
 			return "pytorch-2.4"
-		}
-		if strings.Contains(version, "2.3") || strings.Contains(version, "2-3") || strings.Contains(version, "230") {
-			return "pytorch-2.3"
 		}
 	}
 
@@ -312,9 +369,10 @@ func (ivt *ImageVersionTracker) cleanupRoutine() {
 		now := time.Now()
 		for key, data := range ivt.activeVersions {
 			if now.Sub(data.LastUpdated) > ivt.maxAge {
-				if ivt.topVersions[data.Version] > 0 {
-					ivt.topVersions[data.Version]--
-					TrainingOperatorImageVersionUsage.WithLabelValues(data.Version).Dec()
+				runtimeLabel := createCompositeRuntimeLabel(data.Version, data.ImageSource)
+				if ivt.versionCounts[runtimeLabel] > 0 {
+					ivt.versionCounts[runtimeLabel]--
+					TrainingOperatorRuntimeAdoption.WithLabelValues(runtimeLabel).Dec()
 				}
 				delete(ivt.activeVersions, key)
 				klog.V(4).InfoS("Cleaned up stale job tracking", "key", key)
@@ -339,9 +397,10 @@ func (ivt *ImageVersionTracker) removeOldestLocked() {
 
 	if oldestKey != "" {
 		data := ivt.activeVersions[oldestKey]
-		if ivt.topVersions[data.Version] > 0 {
-			ivt.topVersions[data.Version]--
-			TrainingOperatorImageVersionUsage.WithLabelValues(data.Version).Dec()
+		runtimeLabel := createCompositeRuntimeLabel(data.Version, data.ImageSource)
+		if ivt.versionCounts[runtimeLabel] > 0 {
+			ivt.versionCounts[runtimeLabel]--
+			TrainingOperatorRuntimeAdoption.WithLabelValues(runtimeLabel).Dec()
 		}
 		delete(ivt.activeVersions, oldestKey)
 	}
@@ -367,7 +426,7 @@ func (ivt *ImageVersionTracker) cardinalityMonitor() {
 
 		// Count active version timeseries
 		ivt.mu.RLock()
-		for _, count := range ivt.topVersions {
+		for _, count := range ivt.versionCounts {
 			if count > 0 {
 				versionCount++
 			}
@@ -422,7 +481,7 @@ func (ivt *ImageVersionTracker) consolidateOtherVersions() {
 	minCount := int(^uint(0) >> 1) // Max int
 	minVersion := ""
 
-	for version, count := range ivt.topVersions {
+	for version, count := range ivt.versionCounts {
 		if version != "other" && count < minCount && count > 0 {
 			minCount = count
 			minVersion = version
@@ -431,8 +490,8 @@ func (ivt *ImageVersionTracker) consolidateOtherVersions() {
 
 	if minVersion != "" && minCount < 5 {
 		// Merge the least used version into "other"
-		ivt.topVersions["other"] += minCount
-		ivt.topVersions[minVersion] = 0
+		ivt.versionCounts["other"] += minCount
+		ivt.versionCounts[minVersion] = 0
 		
 		// Update metrics
 		TrainingOperatorImageVersionUsage.WithLabelValues("other").Add(float64(minCount))
@@ -549,7 +608,7 @@ func consolidateLeastUsedVersions(tracker *ImageVersionTracker, excessCount int)
 	}
 	
 	var versions []versionUsage
-	for version, count := range tracker.topVersions {
+	for version, count := range tracker.versionCounts {
 		if version != "other" && count > 0 {
 			versions = append(versions, versionUsage{version, count})
 		}
@@ -571,8 +630,8 @@ func consolidateLeastUsedVersions(tracker *ImageVersionTracker, excessCount int)
 		count := versions[i].count
 		
 		// Move to "other"
-		tracker.topVersions["other"] += count
-		tracker.topVersions[version] = 0
+		tracker.versionCounts["other"] += count
+		tracker.versionCounts[version] = 0
 		
 		// Update metric
 		TrainingOperatorImageVersionUsage.WithLabelValues("other").Add(float64(count))

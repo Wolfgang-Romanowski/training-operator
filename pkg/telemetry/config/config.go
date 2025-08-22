@@ -63,7 +63,7 @@ func Initialize() {
 			Enabled:           true,
 			AsyncProcessing:   true,
 			ProcessingTimeout: 5 * time.Second,
-			MaxCardinality:    30, // Red Hat limit
+			MaxCardinality:    10, // Red Hat limit per RHOAISTRAT-575
 			CleanupInterval:   1 * time.Hour,
 			MaxEntryAge:       24 * time.Hour,
 			MaxEntries:        10000,
@@ -132,8 +132,8 @@ func validateConfig() {
 	if config.MaxCardinality < 1 {
 		config.MaxCardinality = 1
 	}
-	if config.MaxCardinality > 100 {
-		klog.Warningf("High cardinality limit set: %d (Red Hat recommends max 30)", config.MaxCardinality)
+	if config.MaxCardinality > 10 {
+		klog.Warningf("High cardinality limit set: %d (Red Hat REQUIRES max 10 per RHOAISTRAT-575)", config.MaxCardinality)
 	}
 	
 	// Ensure reasonable entry limits

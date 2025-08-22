@@ -13,7 +13,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: otel-collector-service
+      app.kubernetes.io/name: training-operator-otel-collector
       app.kubernetes.io/component: telemetry-gateway
   endpoints:
   - port: prometheus

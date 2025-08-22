@@ -28,14 +28,14 @@ var (
 	initOnce    sync.Once
 	initialized bool
 	
-	// trackedVersions defines the set of versions we actively track.
-	// This list is limited to maintain cardinality compliance with Red Hat requirements.
-	trackedVersions = []string{
-		"pytorch-2.4",
-		"pytorch-2.3",
-		"tensorflow-2.15",
-		"tensorflow-2.14",
-		"other",
+	// trackedRuntimes defines the smart composite labels we track.
+	// Maximum 5 combinations to stay within Red Hat's 10 timeseries limit.
+	trackedRuntimes = []string{
+		"pytorch-2.4-rhoai",
+		"pytorch-2.4-external",
+		"pytorch-2.5-rhoai",
+		"pytorch-2.5-external",
+		"other", // Consolidated bucket for untracked versions
 	}
 )
 
@@ -43,12 +43,12 @@ var (
 // It provides a centralized location for all metrics to ensure consistent
 // initialization and management across the operator.
 type Registry struct {
-	ImageVersionUsage     *prometheus.GaugeVec
-	ImageSourcePreference *prometheus.CounterVec
-	EnterpriseAdoption    *prometheus.CounterVec
-	ReconcileErrors       *prometheus.CounterVec
-	ReconcileDuration     *prometheus.HistogramVec
-	InternalFailures      *prometheus.CounterVec
+	RuntimeAdoption      *prometheus.GaugeVec    // Smart metric 1: version+source combined
+	CustomerSegment      *prometheus.CounterVec  // Smart metric 2: binary segmentation
+	FrameworkUsage       *prometheus.CounterVec  // Smart metric 3: high-level framework
+	ReconcileErrors      *prometheus.CounterVec
+	ReconcileDuration    *prometheus.HistogramVec
+	InternalFailures     *prometheus.CounterVec
 }
 
 var registry *Registry
@@ -62,9 +62,9 @@ func Initialize() error {
 		klog.Info("Initializing telemetry metrics registry")
 
 		registry = &Registry{
-			ImageVersionUsage:     TrainingOperatorImageVersionUsage,
-			ImageSourcePreference: TrainingOperatorImageSourcePreference,
-			EnterpriseAdoption:    TrainingOperatorEnterpriseAdoption,
+			RuntimeAdoption:      TrainingOperatorRuntimeAdoption,
+			CustomerSegment:      TrainingOperatorCustomerSegment,
+			FrameworkUsage:       TrainingOperatorFrameworkUsage,
 
 			ReconcileErrors: prometheus.NewCounterVec(
 				prometheus.CounterOpts{
@@ -108,20 +108,25 @@ func Initialize() error {
 	return err
 }
 
-// initializeCRDInstanceTracking initializes the CRD instance tracking metrics.
-// This internal function sets up telemetry metrics for tracking training job instances
-// and starts background routines for cleanup and cardinality monitoring.
+// initializeCRDInstanceTracking initializes the smart composite metrics.
+// This uses intelligent label combinations to maximize information density
+// while staying within Red Hat's 10 timeseries cardinality limit.
 func initializeCRDInstanceTracking() {
 	metrics.Registry.MustRegister(
-		TrainingOperatorImageVersionUsage,
-		TrainingOperatorImageSourcePreference,
-		TrainingOperatorEnterpriseAdoption,
+		TrainingOperatorRuntimeAdoption,
+		TrainingOperatorCustomerSegment,
+		TrainingOperatorFrameworkUsage,
 	)
 
-	// Initialize tracked versions with zero values
-	for _, v := range trackedVersions {
-		getImageVersionTracker().initializeVersion(v)
-		TrainingOperatorImageVersionUsage.WithLabelValues(v).Set(0)
+	// Initialize smart composite runtime labels (max 5 combinations)
+	// This gives us BOTH version AND source info in single metric!
+	runtimeCombinations := []string{
+		"pytorch-2.4-rhoai", "pytorch-2.4-external",
+		"pytorch-2.5-rhoai", "pytorch-2.5-external",
+		"other", // Don't differentiate source for "other"
+	}
+	for _, runtime := range runtimeCombinations {
+		TrainingOperatorRuntimeAdoption.WithLabelValues(runtime).Set(0)
 	}
 
 	// Start background cleanup and monitoring routines

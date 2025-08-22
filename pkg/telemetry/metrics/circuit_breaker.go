@@ -106,25 +106,51 @@ func CheckCardinalityCircuitBreaker() {
 	}
 }
 
-// EmergencyClearMetrics clears all telemetry metrics in case of severe cardinality violations.
-// This is a last resort to prevent system overload per Red Hat monitoring requirements.
+// EmergencyClearMetrics reduces cardinality by consolidating least-used labels.
+// Instead of clearing all metrics, it merges low-usage versions into "other".
 func EmergencyClearMetrics() {
-	klog.Warning("Emergency clearing all telemetry metrics due to cardinality violations")
+	klog.Warning("Reducing metric cardinality due to violations")
 	
-	// Reset gauge metrics
-	TrainingOperatorImageVersionUsage.Reset()
-	
-	// Note: Counter metrics cannot be reset in Prometheus, but we can stop incrementing them
-	// by disabling telemetry collection via the circuit breaker
-	
-	// Clear internal tracking
 	tracker := getImageVersionTracker()
 	tracker.mu.Lock()
-	tracker.activeVersions = make(map[string]*VersionData)
-	tracker.topVersions = make(map[string]int)
-	tracker.mu.Unlock()
+	defer tracker.mu.Unlock()
 	
-	klog.Info("Emergency metric clearing completed")
+	// Find least-used versions and consolidate them
+	consolidateIntoOther := []string{}
+	for version, count := range tracker.versionCounts {
+		if version != "other" && count <= 2 {
+			consolidateIntoOther = append(consolidateIntoOther, version)
+		}
+	}
+	
+	// Consolidate low-usage versions into "other"
+	otherCount := tracker.versionCounts["other"]
+	for _, version := range consolidateIntoOther {
+		otherCount += tracker.versionCounts[version]
+		delete(tracker.versionCounts, version)
+		
+		// Update gauge metric with composite label
+		for _, source := range []string{"-rhoai", "-external"} {
+			TrainingOperatorRuntimeAdoption.DeleteLabelValues(version + source)
+		}
+		
+		// Update internal tracking
+		for key, data := range tracker.activeVersions {
+			if data.Version == version {
+				data.Version = "other"
+			}
+		}
+	}
+	
+	// Update "other" count
+	if otherCount > 0 {
+		tracker.versionCounts["other"] = otherCount
+		TrainingOperatorRuntimeAdoption.WithLabelValues("other").Set(float64(otherCount))
+	}
+	
+	klog.InfoS("Cardinality reduction completed", 
+		"consolidated", len(consolidateIntoOther),
+		"remaining_versions", len(tracker.versionCounts))
 }
 
 // ResetCircuitBreaker manually resets the circuit breaker state.
